@@ -75,7 +75,7 @@ To build the Windows installer (`NocturneSetup-1.0.0-win-x64.exe`), open `Noctur
 
 - Windows 10 (19041+) veya Windows 11 (x64)
 - [Microsoft Edge WebView2 Çalışma Zamanı](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (Windows 11'de yüklü gelir)
-- [.NET 10 SDK]([https://dotnet.microsoft.com/](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/sdk-10.0.404-windows-x64-installer)) *(yalnızca kaynak koddan derlemek için gereklidir)*
+- [.NET 10 SDK](https://dotnet.microsoft.com/) *(yalnızca kaynak koddan derlemek için gereklidir)*
 
 ### Kaynak Koddan Derleme
 
