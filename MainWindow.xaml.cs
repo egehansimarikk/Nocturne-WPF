@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -29,6 +30,7 @@ namespace Nocturne
         private Forms.NotifyIcon? _trayIcon;
         private Forms.ToolStripMenuItem? _trayShowItem;
         private Forms.ToolStripMenuItem? _trayMiniItem;
+        private Forms.ToolStripMenuItem? _trayUnlockMiniItem;
         private Forms.ToolStripMenuItem? _trayExitItem;
         private MiniPlayerWindow? _miniPlayer;
         private TrackOsdWindow? _osdWindow;
@@ -40,6 +42,7 @@ namespace Nocturne
         private string _lastSmtcTitle = "";
         private string _lastSmtcArtwork = "";
         private string _lastOsdTrackKey = "";
+        private string _latestReleaseUrl = "https://github.com/egehansimarikk/Nocturne/releases/latest";
         private bool _isLastPlaying = false;
         private readonly WasapiAudioBridge _wasapiBridge = new();
         private readonly DiscordRpcService _discordRpc = new();
@@ -77,6 +80,7 @@ namespace Nocturne
             Loaded += MainWindow_Loaded;
             Closing += MainWindow_Closing;
             _wasapiBridge.AudioDevicesChanged += OnAudioDevicesChanged;
+            _wasapiBridge.SetEqualizer(_settings.EqualizerEnabled, _settings.EqualizerBands);
             _discordRpc.Configure(_settings.EnableDiscordRpc);
             SetupTrayIcon();
         }
@@ -90,6 +94,12 @@ namespace Nocturne
                     Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
             }
             catch { }
+        }
+
+        private void UpdateAudioFormatBadge()
+        {
+            string eqSuffix = (_wasapiBridge.IsRunning && _settings.EqualizerEnabled) ? " • EQ" : "";
+            AudioFormatText.Text = _wasapiBridge.ActiveStreamBadge + eqSuffix;
         }
 
         private void OnAudioDevicesChanged()
@@ -124,6 +134,7 @@ namespace Nocturne
                 {
                     bool wasPlaying = _isLastPlaying;
                     _wasapiBridge.Stop();
+                    UpdateAudioFormatBadge();
 
                     if (DeezerWebView?.CoreWebView2 != null)
                     {
@@ -176,12 +187,10 @@ namespace Nocturne
             for (int id = 9001; id <= 9006; id++)
                 UnregisterHotKey(hwnd, id);
 
-            // Klavye fiziksel medya tuşları
             RegisterHotKey(hwnd, HOTKEY_MEDIA_PLAY, MOD_NOREPEAT, VK_MEDIA_PLAY_PAUSE);
             RegisterHotKey(hwnd, HOTKEY_MEDIA_NEXT, MOD_NOREPEAT, VK_MEDIA_NEXT_TRACK);
             RegisterHotKey(hwnd, HOTKEY_MEDIA_PREV, MOD_NOREPEAT, VK_MEDIA_PREV_TRACK);
 
-            // Ayarlardan özelleştirilen kısayol kombinasyonları
             if (_settings.PlayHotkeyVk != 0)
                 RegisterHotKey(hwnd, HOTKEY_COMBO_PLAY, _settings.PlayHotkeyModifiers | MOD_NOREPEAT, _settings.PlayHotkeyVk);
 
@@ -338,14 +347,20 @@ namespace Nocturne
             var menu = new Forms.ContextMenuStrip();
             _trayShowItem = new Forms.ToolStripMenuItem(Localization.Get("TrayShow", _settings.Language));
             _trayMiniItem = new Forms.ToolStripMenuItem(Localization.Get("TrayMiniPlayer", _settings.Language));
+            _trayUnlockMiniItem = new Forms.ToolStripMenuItem(Localization.Get("TrayUnlockMini", _settings.Language))
+            {
+                Visible = false
+            };
             _trayExitItem = new Forms.ToolStripMenuItem(Localization.Get("TrayExit", _settings.Language));
 
             _trayShowItem.Click += (_, _) => RestoreFromTray();
             _trayMiniItem.Click += (_, _) => OpenMiniPlayer(hideMain: false);
+            _trayUnlockMiniItem.Click += (_, _) => _miniPlayer?.SetClickThrough(false);
             _trayExitItem.Click += (_, _) => ExitApplication();
 
             menu.Items.Add(_trayShowItem);
             menu.Items.Add(_trayMiniItem);
+            menu.Items.Add(_trayUnlockMiniItem);
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add(_trayExitItem);
 
@@ -375,6 +390,8 @@ namespace Nocturne
                 _trayShowItem.Text = Localization.Get("TrayShow", _settings.Language);
             if (_trayMiniItem != null)
                 _trayMiniItem.Text = Localization.Get("TrayMiniPlayer", _settings.Language);
+            if (_trayUnlockMiniItem != null)
+                _trayUnlockMiniItem.Text = Localization.Get("TrayUnlockMini", _settings.Language);
             if (_trayExitItem != null)
                 _trayExitItem.Text = Localization.Get("TrayExit", _settings.Language);
         }
@@ -391,8 +408,16 @@ namespace Nocturne
         {
             if (_miniPlayer == null)
             {
-                _miniPlayer = new MiniPlayerWindow(SendPlayerCommand, RestoreFromTray);
+                _miniPlayer = new MiniPlayerWindow(
+                    SendPlayerCommand,
+                    RestoreFromTray,
+                    isLocked =>
+                    {
+                        if (_trayUnlockMiniItem != null)
+                            _trayUnlockMiniItem.Visible = isLocked;
+                    });
             }
+            _miniPlayer.SetLanguage(_settings.Language);
             _miniPlayer.Show();
             _miniPlayer.Activate();
 
@@ -455,6 +480,8 @@ namespace Nocturne
 
         private async Task ApplyAudioRoutingAsync(bool silentOnError = false)
         {
+            _wasapiBridge.SetEqualizer(_settings.EqualizerEnabled, _settings.EqualizerBands);
+
             if (_settings.AudioEngineMode.StartsWith("wasapi"))
             {
                 var allDevices = WasapiAudioBridge.GetOutputDevices();
@@ -463,6 +490,7 @@ namespace Nocturne
                     !allDevices.Any(d => d.Id == _settings.WasapiDeviceId))
                 {
                     _wasapiBridge.Stop();
+                    UpdateAudioFormatBadge();
                     if (DeezerWebView?.CoreWebView2 != null)
                         await DeezerWebView.CoreWebView2.ExecuteScriptAsync("window.__applyNocturneSink && window.__applyNocturneSink('');");
                     return;
@@ -494,6 +522,8 @@ namespace Nocturne
 
                 bool exclusive = _settings.AudioEngineMode == "wasapi_exclusive";
                 var (success, errorMsg) = _wasapiBridge.Start(_settings.WasapiDeviceId, exclusive);
+                UpdateAudioFormatBadge();
+
                 if (!success)
                 {
                     if (!silentOnError)
@@ -514,6 +544,7 @@ namespace Nocturne
             else
             {
                 _wasapiBridge.Stop();
+                UpdateAudioFormatBadge();
                 if (DeezerWebView?.CoreWebView2 != null)
                 {
                     string escapedId = JsonSerializer.Serialize(_settings.AudioOutputDeviceId ?? "");
@@ -555,6 +586,9 @@ namespace Nocturne
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            if (_settings.CheckUpdatesOnStartup)
+                _ = CheckForAppUpdatesAsync();
+
             string userDataFolder = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Nocturne",
@@ -598,6 +632,30 @@ namespace Nocturne
             }
         }
 
+        private async Task CheckForAppUpdatesAsync()
+        {
+            var info = await UpdateChecker.CheckForUpdatesAsync();
+            if (info.IsUpdateAvailable)
+            {
+                _latestReleaseUrl = info.ReleaseUrl;
+                UpdateBtn.Content = $"⬆ {Localization.Get("UpdateAvailableBadge", _settings.Language)} ({info.LatestTag})";
+                UpdateBtn.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void UpdateBtn_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = _latestReleaseUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch { }
+        }
+
         private void CoreWebView2_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
         {
             try
@@ -613,7 +671,6 @@ namespace Nocturne
                         UpdateWindowsSmtc(state);
                         _discordRpc.UpdatePresence(state);
 
-                        // Uygulama arka plandayken (veya tepsideyken) şarkı değiştiğinde OSD göster
                         string currentTrackKey = $"{state.Title}|{state.Artist}";
                         if (!string.IsNullOrWhiteSpace(state.Title) && state.IsPlaying && currentTrackKey != _lastOsdTrackKey)
                         {
@@ -921,6 +978,10 @@ namespace Nocturne
 
         private async void SettingsBtn_Click(object sender, RoutedEventArgs e)
         {
+            string prevMode = _settings.AudioEngineMode;
+            string prevDevice = _settings.AudioOutputDeviceId;
+            string prevWasapi = _settings.WasapiDeviceId;
+
             var dialog = new SettingsWindow(_settings, GetAudioOutputDevicesAsync)
             {
                 Owner = this
@@ -932,7 +993,16 @@ namespace Nocturne
                 UpdateTrayTexts();
                 RegisterGlobalHotKeys();
                 _discordRpc.Configure(_settings.EnableDiscordRpc);
-                await ApplyAudioRoutingAsync();
+                _wasapiBridge.SetEqualizer(_settings.EqualizerEnabled, _settings.EqualizerBands);
+
+                bool routingChanged = prevMode != _settings.AudioEngineMode ||
+                                      prevDevice != _settings.AudioOutputDeviceId ||
+                                      prevWasapi != _settings.WasapiDeviceId;
+
+                if (routingChanged)
+                    await ApplyAudioRoutingAsync();
+                else
+                    UpdateAudioFormatBadge();
             }
         }
     }

@@ -20,13 +20,17 @@ namespace Nocturne
         private WasapiOut? _output;
         private BufferedWaveProvider? _buffer;
         private MediaFoundationResampler? _resampler;
+        private EqualizerSampleProvider? _equalizer;
         private string _mutedEndpointId = "";
         private bool _previousEndpointMuteState = false;
+        private bool _eqEnabled;
+        private float[] _eqGains = new float[10];
         private readonly object _lock = new();
 
         public bool IsRunning { get; private set; }
         public string ActiveCaptureDeviceId { get; private set; } = "";
         public string ActiveTargetDeviceId { get; private set; } = "";
+        public string ActiveStreamBadge { get; private set; } = "WebView2 • Standard";
 
         public event Action? AudioDevicesChanged;
 
@@ -38,6 +42,16 @@ namespace Nocturne
                 _deviceEnumerator.RegisterEndpointNotificationCallback(this);
             }
             catch { }
+        }
+
+        public void SetEqualizer(bool enabled, float[] gains)
+        {
+            lock (_lock)
+            {
+                _eqEnabled = enabled;
+                _eqGains = gains != null && gains.Length == 10 ? (float[])gains.Clone() : new float[10];
+                _equalizer?.UpdateBands(_eqEnabled, _eqGains);
+            }
         }
 
         public static List<WasapiDeviceInfo> GetOutputDevices()
@@ -79,7 +93,11 @@ namespace Nocturne
                         ? defaultDevice
                         : (allActive.FirstOrDefault(d => d.ID == deviceId) ?? defaultDevice);
 
-                    // Hedef DAC dışındaki dahili ses cihazını köprü (capture) olarak seç
+                    var mixFmt = targetDevice.AudioClient.MixFormat;
+                    double khz = Math.Round(mixFmt.SampleRate / 1000.0, 1);
+                    string modeLabel = exclusiveMode ? "WASAPI Exclusive" : "WASAPI Shared";
+                    string formatText = $"{khz:0.#} kHz / {mixFmt.BitsPerSample}-bit • {modeLabel}";
+
                     MMDevice? captureDevice = allActive.FirstOrDefault(d => d.ID != targetDevice.ID);
 
                     if (captureDevice == null)
@@ -90,6 +108,7 @@ namespace Nocturne
                         }
 
                         ActiveTargetDeviceId = targetDevice.ID;
+                        ActiveStreamBadge = formatText;
                         IsRunning = true;
                         return (true, "");
                     }
@@ -110,20 +129,24 @@ namespace Nocturne
 
                     _output = new WasapiOut(targetDevice, shareMode, useEventSync: true, latency: 50);
 
-                    var targetFormat = targetDevice.AudioClient.MixFormat;
-                    if (_capture.WaveFormat.SampleRate != targetFormat.SampleRate ||
-                        _capture.WaveFormat.Channels != targetFormat.Channels)
+                    ISampleProvider sampleChain;
+                    if (_capture.WaveFormat.SampleRate != mixFmt.SampleRate ||
+                        _capture.WaveFormat.Channels != mixFmt.Channels)
                     {
-                        _resampler = new MediaFoundationResampler(_buffer, targetFormat)
+                        _resampler = new MediaFoundationResampler(_buffer, mixFmt)
                         {
                             ResamplerQuality = 60
                         };
-                        _output.Init(_resampler);
+                        sampleChain = _resampler.ToSampleProvider();
                     }
                     else
                     {
-                        _output.Init(_buffer);
+                        sampleChain = _buffer.ToSampleProvider();
                     }
+
+                    _equalizer = new EqualizerSampleProvider(sampleChain);
+                    _equalizer.UpdateBands(_eqEnabled, _eqGains);
+                    _output.Init(_equalizer);
 
                     _capture.DataAvailable += (_, e) =>
                     {
@@ -135,9 +158,9 @@ namespace Nocturne
 
                     _output.Play();
                     _capture.StartRecording();
+                    ActiveStreamBadge = formatText;
                     IsRunning = true;
 
-                    // Oturumu değil, yalnızca köprü cihazının fiziksel çıkışını sustur
                     _mutedEndpointId = captureDevice.ID;
                     _previousEndpointMuteState = captureDevice.AudioEndpointVolume.Mute;
                     captureDevice.AudioEndpointVolume.Mute = true;
@@ -159,6 +182,7 @@ namespace Nocturne
                 IsRunning = false;
                 ActiveCaptureDeviceId = "";
                 ActiveTargetDeviceId = "";
+                ActiveStreamBadge = "WebView2 • Standard";
 
                 if (!string.IsNullOrWhiteSpace(_mutedEndpointId))
                 {
@@ -183,6 +207,7 @@ namespace Nocturne
                 try { _resampler?.Dispose(); } catch { }
                 _resampler = null;
 
+                _equalizer = null;
                 _buffer = null;
             }
         }

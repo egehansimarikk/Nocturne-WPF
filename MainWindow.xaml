@@ -17,12 +17,28 @@
             <DockPanel LastChildFill="False">
                 <TextBlock Text="NOCTURNE" VerticalAlignment="Center" FontSize="11" FontWeight="Bold"
                            Foreground="#8E8E9E" DockPanel.Dock="Left"/>
+
+                <!-- Canlı Ses Formatı Rozeti -->
+                <Border x:Name="AudioBadgeBorder" DockPanel.Dock="Left" Margin="10,0,0,0" Padding="8,2"
+                        CornerRadius="6" Background="#1A1A22" BorderBrush="#2C2C3A" BorderThickness="1"
+                        VerticalAlignment="Center">
+                    <TextBlock x:Name="AudioFormatText" Text="WebView2 • Standard" FontSize="10.5"
+                               FontWeight="SemiBold" Foreground="#B87BFF"/>
+                </Border>
+
+                <!-- Sağ Taraf Butonları -->
                 <Button x:Name="SettingsBtn" DockPanel.Dock="Right" Content="⚙" Width="30" Height="24"
                         Background="Transparent" Foreground="#C8C8D4" BorderThickness="0"
                         FontSize="14" Cursor="Hand" Click="SettingsBtn_Click"/>
                 <Button x:Name="MiniPlayerBtn" DockPanel.Dock="Right" Content="⧉" Width="30" Height="24" Margin="0,0,2,0"
                         Background="Transparent" Foreground="#C8C8D4" BorderThickness="0"
                         FontSize="13" Cursor="Hand" Click="MiniPlayerBtn_Click"/>
+
+                <!-- GitHub Güncelleme Rozeti -->
+                <Button x:Name="UpdateBtn" DockPanel.Dock="Right" Margin="0,0,8,0" Padding="8,2" Height="22"
+                        Background="#281A38" Foreground="#D475FF" BorderBrush="#A238FF" BorderThickness="1"
+                        FontSize="10.5" FontWeight="SemiBold" Cursor="Hand" Visibility="Collapsed"
+                        Click="UpdateBtn_Click"/>
             </DockPanel>
         </Border>
 

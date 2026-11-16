@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace Nocturne
@@ -24,6 +25,20 @@ namespace Nocturne
         private readonly Func<Task<List<AudioDeviceItem>>> _fetchWebViewDevicesAsync;
         private string _selectedLangCode;
         private string _selectedEngineMode;
+        private string _selectedEqPreset;
+        private bool _suppressEqEvents = false;
+
+        private readonly Slider[] _eqSliders = new Slider[10];
+        private readonly TextBlock[] _eqValueTexts = new TextBlock[10];
+
+        private static readonly Dictionary<string, float[]> EqPresets = new()
+        {
+            ["flat"] = new float[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            ["bass"] = new float[] { 6.5f, 5.5f, 4.0f, 1.5f, 0, 0, 0, 1.0f, 1.5f, 2.0f },
+            ["vocal"] = new float[] { -2.0f, -1.0f, 0, 1.5f, 3.5f, 4.5f, 3.0f, 1.5f, 0.5f, 0 },
+            ["vshape"] = new float[] { 5.0f, 4.0f, 1.5f, -1.5f, -2.5f, -1.5f, 1.5f, 3.5f, 4.5f, 5.0f },
+            ["treble"] = new float[] { 0, 0, 0, 0, 0.5f, 1.5f, 3.0f, 4.5f, 5.5f, 6.0f }
+        };
 
         private uint _playMod, _playVk;
         private uint _nextMod, _nextVk;
@@ -40,10 +55,13 @@ namespace Nocturne
             _fetchWebViewDevicesAsync = fetchWebViewDevicesAsync;
             _selectedLangCode = string.IsNullOrWhiteSpace(_settings.Language) ? "auto" : _settings.Language;
             _selectedEngineMode = string.IsNullOrWhiteSpace(_settings.AudioEngineMode) ? "webview" : _settings.AudioEngineMode;
+            _selectedEqPreset = string.IsNullOrWhiteSpace(_settings.EqualizerPreset) ? "flat" : _settings.EqualizerPreset;
 
             MinimizeToTrayCheck.IsChecked = _settings.MinimizeToTrayOnClose;
             TrackOsdCheck.IsChecked = _settings.EnableTrackOsd;
             DiscordRpcCheck.IsChecked = _settings.EnableDiscordRpc;
+            UpdateCheckBox.IsChecked = _settings.CheckUpdatesOnStartup;
+            EqEnableCheck.IsChecked = _settings.EqualizerEnabled;
 
             _playMod = _settings.PlayHotkeyModifiers;
             _playVk = _settings.PlayHotkeyVk;
@@ -52,6 +70,7 @@ namespace Nocturne
             _prevMod = _settings.PrevHotkeyModifiers;
             _prevVk = _settings.PrevHotkeyVk;
 
+            BuildEqualizerSliders();
             RefreshHotkeyTexts();
 
             SourceInitialized += (_, _) =>
@@ -62,6 +81,7 @@ namespace Nocturne
             };
 
             PopulateEngines();
+            PopulateEqPresets();
             PopulateLanguages();
             ApplyLocalizedTexts();
             Loaded += async (_, _) => await LoadDevicesAsync();
@@ -76,6 +96,122 @@ namespace Nocturne
                     Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
             }
             catch { }
+        }
+
+        private void BuildEqualizerSliders()
+        {
+            string[] labels = { "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
+            EqBandsGrid.Children.Clear();
+
+            for (int i = 0; i < 10; i++)
+            {
+                int idx = i;
+                float initialGain = (_settings.EqualizerBands != null && i < _settings.EqualizerBands.Length)
+                    ? Math.Clamp(_settings.EqualizerBands[i], -12f, 12f)
+                    : 0f;
+
+                var panel = new Grid();
+                panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+                var valText = new TextBlock
+                {
+                    Text = $"{initialGain:+0.#;-0.#;0}",
+                    FontSize = 9.5,
+                    Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(184, 123, 255)),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 0, 0, 2)
+                };
+                Grid.SetRow(valText, 0);
+
+                var slider = new Slider
+                {
+                    Orientation = Orientation.Vertical,
+                    Minimum = -12,
+                    Maximum = 12,
+                    Value = initialGain,
+                    TickFrequency = 1,
+                    IsSnapToTickEnabled = false,
+                    IsMoveToPointEnabled = true,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Cursor = Cursors.Hand
+                };
+                slider.ValueChanged += (_, _) =>
+                {
+                    valText.Text = $"{slider.Value:+0.#;-0.#;0}";
+                    if (!_suppressEqEvents)
+                    {
+                        _selectedEqPreset = "custom";
+                        SelectEqPresetItem("custom");
+                    }
+                };
+                Grid.SetRow(slider, 1);
+
+                var freqText = new TextBlock
+                {
+                    Text = labels[i],
+                    FontSize = 9.5,
+                    Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(154, 154, 176)),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 2, 0, 0)
+                };
+                Grid.SetRow(freqText, 2);
+
+                panel.Children.Add(valText);
+                panel.Children.Add(slider);
+                panel.Children.Add(freqText);
+
+                _eqSliders[i] = slider;
+                _eqValueTexts[i] = valText;
+                EqBandsGrid.Children.Add(panel);
+            }
+        }
+
+        private void PopulateEqPresets()
+        {
+            _suppressEqEvents = true;
+            EqPresetComboBox.Items.Clear();
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "flat", Content = Localization.Get("EqPresetFlat", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "bass", Content = Localization.Get("EqPresetBass", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "vocal", Content = Localization.Get("EqPresetVocal", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "vshape", Content = Localization.Get("EqPresetVShape", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "treble", Content = Localization.Get("EqPresetTreble", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "custom", Content = Localization.Get("EqPresetCustom", _selectedLangCode) });
+            SelectEqPresetItem(_selectedEqPreset);
+            _suppressEqEvents = false;
+        }
+
+        private void SelectEqPresetItem(string tag)
+        {
+            _suppressEqEvents = true;
+            foreach (ComboBoxItem item in EqPresetComboBox.Items)
+            {
+                if ((string)item.Tag == tag)
+                {
+                    EqPresetComboBox.SelectedItem = item;
+                    break;
+                }
+            }
+            _suppressEqEvents = false;
+        }
+
+        private void EqPresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressEqEvents)
+                return;
+
+            if (EqPresetComboBox.SelectedItem is ComboBoxItem item && item.Tag is string preset)
+            {
+                _selectedEqPreset = preset;
+                if (EqPresets.TryGetValue(preset, out var gains))
+                {
+                    _suppressEqEvents = true;
+                    for (int i = 0; i < 10; i++)
+                        _eqSliders[i].Value = gains[i];
+                    _suppressEqEvents = false;
+                }
+            }
         }
 
         private void RefreshHotkeyTexts()
@@ -173,11 +309,14 @@ namespace Nocturne
             AudioEngineLabel.Text = Localization.Get("AudioEngineLabel", _selectedLangCode);
             AudioOutputLabel.Text = Localization.Get("AudioOutputLabel", _selectedLangCode);
             RefreshBtn.Content = Localization.Get("RefreshDevices", _selectedLangCode);
+            EqSectionLabel.Text = Localization.Get("EqSectionLabel", _selectedLangCode);
+            EqEnableCheck.Content = Localization.Get("EqEnableCheck", _selectedLangCode);
             LanguageLabel.Text = Localization.Get("LanguageLabel", _selectedLangCode);
             CloseBehaviorLabel.Text = Localization.Get("CloseBehaviorLabel", _selectedLangCode);
             MinimizeToTrayCheck.Content = Localization.Get("MinimizeToTrayCheck", _selectedLangCode);
             TrackOsdCheck.Content = Localization.Get("TrackOsdCheck", _selectedLangCode);
             DiscordRpcCheck.Content = Localization.Get("DiscordRpcCheck", _selectedLangCode);
+            UpdateCheckBox.Content = Localization.Get("UpdateCheckBox", _selectedLangCode);
             HotkeysLabel.Text = Localization.Get("HotkeysLabel", _selectedLangCode);
             HotkeyPlayLabel.Text = Localization.Get("HotkeyPlayLabel", _selectedLangCode);
             HotkeyNextLabel.Text = Localization.Get("HotkeyNextLabel", _selectedLangCode);
@@ -232,6 +371,7 @@ namespace Nocturne
             {
                 _selectedLangCode = code;
                 PopulateEngines();
+                PopulateEqPresets();
                 PopulateLanguages();
                 ApplyLocalizedTexts();
                 if (DeviceComboBox.ItemsSource is List<AudioDeviceItem> list && list.Count > 0)
@@ -253,6 +393,12 @@ namespace Nocturne
             _settings.MinimizeToTrayOnClose = MinimizeToTrayCheck.IsChecked == true;
             _settings.EnableTrackOsd = TrackOsdCheck.IsChecked == true;
             _settings.EnableDiscordRpc = DiscordRpcCheck.IsChecked == true;
+            _settings.CheckUpdatesOnStartup = UpdateCheckBox.IsChecked == true;
+
+            _settings.EqualizerEnabled = EqEnableCheck.IsChecked == true;
+            _settings.EqualizerPreset = _selectedEqPreset;
+            for (int i = 0; i < 10; i++)
+                _settings.EqualizerBands[i] = (float)Math.Round(_eqSliders[i].Value, 1);
 
             _settings.PlayHotkeyModifiers = _playMod;
             _settings.PlayHotkeyVk = _playVk;

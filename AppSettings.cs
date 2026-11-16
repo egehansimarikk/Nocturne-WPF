@@ -14,6 +14,11 @@ namespace Nocturne
 
         public bool EnableDiscordRpc { get; set; } = true;
         public bool EnableTrackOsd { get; set; } = true;
+        public bool CheckUpdatesOnStartup { get; set; } = true;
+
+        public bool EqualizerEnabled { get; set; } = false;
+        public string EqualizerPreset { get; set; } = "flat";
+        public float[] EqualizerBands { get; set; } = new float[10];
 
         public uint PlayHotkeyModifiers { get; set; } = 3;
         public uint PlayHotkeyVk { get; set; } = 0x20;
@@ -36,7 +41,10 @@ namespace Nocturne
                 if (File.Exists(SettingsPath))
                 {
                     string json = File.ReadAllText(SettingsPath);
-                    return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                    var loaded = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                    if (loaded.EqualizerBands == null || loaded.EqualizerBands.Length != 10)
+                        loaded.EqualizerBands = new float[10];
+                    return loaded;
                 }
             }
             catch { }

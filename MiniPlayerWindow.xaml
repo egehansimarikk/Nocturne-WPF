@@ -12,7 +12,7 @@
         ShowInTaskbar="False"
         MouseLeftButtonDown="Window_MouseLeftButtonDown">
 
-    <Border Background="#F214141A" BorderBrush="#2C2C38" BorderThickness="1" CornerRadius="12" Padding="12">
+    <Border x:Name="RootBorder" Background="#F214141A" BorderBrush="#2C2C38" BorderThickness="1" CornerRadius="12" Padding="12">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="56"/>
@@ -20,7 +20,7 @@
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- Üst Kısım: Albüm Kapağı, Şarkı Bilgisi ve Ana Pencereye Dönüş -->
+            <!-- Üst Kısım: Albüm Kapağı, Şarkı Bilgisi ve Pencere Butonları -->
             <Grid Grid.Row="0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="52"/>
@@ -40,6 +40,9 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top">
+                    <Button x:Name="ClickThroughBtn" Content="📌" Width="22" Height="22" Margin="0,0,2,0"
+                            Background="Transparent" Foreground="#B0B0C0" BorderThickness="0"
+                            FontSize="11" Cursor="Hand" Click="ClickThroughBtn_Click"/>
                     <Button x:Name="ExpandBtn" Content="⤢" Width="22" Height="22" Margin="0,0,2,0"
                             Background="Transparent" Foreground="#B0B0C0" BorderThickness="0"
                             FontSize="12" Cursor="Hand" Click="ExpandBtn_Click"/>

@@ -1,7 +1,9 @@
 ﻿using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 
 namespace Nocturne
@@ -20,16 +22,28 @@ namespace Nocturne
     {
         private readonly Action<string> _sendCommand;
         private readonly Action _restoreMainWindow;
+        private readonly Action<bool>? _onClickThroughChanged;
         private string _lastArtworkUrl = "";
         private bool _isDraggingSeek = false;
         private double _currentDuration = 0;
+        private bool _isClickThrough = false;
 
-        public MiniPlayerWindow(Action<string> sendCommand, Action restoreMainWindow)
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hwnd, int index);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
+
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_TRANSPARENT = 0x00000020;
+
+        public MiniPlayerWindow(Action<string> sendCommand, Action restoreMainWindow, Action<bool>? onClickThroughChanged = null)
         {
             InitializeComponent();
             LoadWindowIcon();
             _sendCommand = sendCommand;
             _restoreMainWindow = restoreMainWindow;
+            _onClickThroughChanged = onClickThroughChanged;
 
             var workArea = SystemParameters.WorkArea;
             Left = workArea.Right - Width - 16;
@@ -45,6 +59,36 @@ namespace Nocturne
                     Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
             }
             catch { }
+        }
+
+        public void SetLanguage(string lang)
+        {
+            ClickThroughBtn.ToolTip = Localization.Get("ClickThroughTooltip", lang);
+        }
+
+        public void SetClickThrough(bool enabled)
+        {
+            _isClickThrough = enabled;
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+                if (enabled)
+                    SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+                else
+                    SetWindowLong(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
+            }
+
+            RootBorder.Opacity = enabled ? 0.58 : 1.0;
+            ClickThroughBtn.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+            ExpandBtn.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+            CloseBtn.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+            _onClickThroughChanged?.Invoke(enabled);
+        }
+
+        private void ClickThroughBtn_Click(object sender, RoutedEventArgs e)
+        {
+            SetClickThrough(true);
         }
 
         public void UpdatePlaybackState(PlaybackStateInfo state, string lang)
@@ -87,7 +131,7 @@ namespace Nocturne
 
         private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            if (e.ButtonState == MouseButtonState.Pressed)
+            if (!_isClickThrough && e.ButtonState == MouseButtonState.Pressed)
                 DragMove();
         }
 
@@ -109,10 +153,15 @@ namespace Nocturne
 
         private void ExpandBtn_Click(object sender, RoutedEventArgs e)
         {
+            SetClickThrough(false);
             Hide();
             _restoreMainWindow();
         }
 
-        private void CloseBtn_Click(object sender, RoutedEventArgs e) => Hide();
+        private void CloseBtn_Click(object sender, RoutedEventArgs e)
+        {
+            SetClickThrough(false);
+            Hide();
+        }
     }
 }
