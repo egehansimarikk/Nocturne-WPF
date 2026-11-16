@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -9,7 +8,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 
 namespace Nocturne
 {
@@ -27,6 +25,7 @@ namespace Nocturne
         private string _selectedEngineMode;
         private string _selectedEqPreset;
         private bool _suppressEqEvents = false;
+        private bool _suppressDeviceChange = false;
 
         private readonly Slider[] _eqSliders = new Slider[10];
         private readonly TextBlock[] _eqValueTexts = new TextBlock[10];
@@ -50,7 +49,6 @@ namespace Nocturne
         public SettingsWindow(AppSettings settings, Func<Task<List<AudioDeviceItem>>> fetchWebViewDevicesAsync)
         {
             InitializeComponent();
-            LoadWindowIcon();
             _settings = settings;
             _fetchWebViewDevicesAsync = fetchWebViewDevicesAsync;
             _selectedLangCode = string.IsNullOrWhiteSpace(_settings.Language) ? "auto" : _settings.Language;
@@ -61,7 +59,11 @@ namespace Nocturne
             TrackOsdCheck.IsChecked = _settings.EnableTrackOsd;
             DiscordRpcCheck.IsChecked = _settings.EnableDiscordRpc;
             UpdateCheckBox.IsChecked = _settings.CheckUpdatesOnStartup;
+
             EqEnableCheck.IsChecked = _settings.EqualizerEnabled;
+            AutoDeviceEqCheck.IsChecked = _settings.AutoDeviceEqProfile;
+            VolumeNormCheck.IsChecked = _settings.EnableVolumeNormalization;
+            VisualizerCheck.IsChecked = _settings.EnableSpectrumVisualizer;
 
             _playMod = _settings.PlayHotkeyModifiers;
             _playVk = _settings.PlayHotkeyVk;
@@ -75,6 +77,7 @@ namespace Nocturne
 
             SourceInitialized += (_, _) =>
             {
+                WindowIconHelper.ApplyHighDpiIcon(this);
                 IntPtr hwnd = new WindowInteropHelper(this).Handle;
                 int dark = 1;
                 DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
@@ -87,17 +90,6 @@ namespace Nocturne
             Loaded += async (_, _) => await LoadDevicesAsync();
         }
 
-        private void LoadWindowIcon()
-        {
-            try
-            {
-                string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
-                if (File.Exists(icoPath))
-                    Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
-            }
-            catch { }
-        }
-
         private void BuildEqualizerSliders()
         {
             string[] labels = { "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
@@ -105,7 +97,6 @@ namespace Nocturne
 
             for (int i = 0; i < 10; i++)
             {
-                int idx = i;
                 float initialGain = (_settings.EqualizerBands != null && i < _settings.EqualizerBands.Length)
                     ? Math.Clamp(_settings.EqualizerBands[i], -12f, 12f)
                     : 0f;
@@ -214,6 +205,27 @@ namespace Nocturne
             }
         }
 
+        private void DeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressDeviceChange || AutoDeviceEqCheck.IsChecked != true)
+                return;
+
+            if (DeviceComboBox.SelectedItem is AudioDeviceItem dev)
+            {
+                string key = string.IsNullOrWhiteSpace(dev.DeviceId) ? "default" : dev.DeviceId;
+                if (_settings.DeviceEqProfiles.TryGetValue(key, out var profile))
+                {
+                    EqEnableCheck.IsChecked = profile.Enabled;
+                    _selectedEqPreset = profile.Preset;
+                    SelectEqPresetItem(_selectedEqPreset);
+                    _suppressEqEvents = true;
+                    for (int i = 0; i < 10 && profile.Bands != null && i < profile.Bands.Length; i++)
+                        _eqSliders[i].Value = profile.Bands[i];
+                    _suppressEqEvents = false;
+                }
+            }
+        }
+
         private void RefreshHotkeyTexts()
         {
             PlayHotkeyBox.Text = FormatHotkey(_playMod, _playVk);
@@ -311,6 +323,9 @@ namespace Nocturne
             RefreshBtn.Content = Localization.Get("RefreshDevices", _selectedLangCode);
             EqSectionLabel.Text = Localization.Get("EqSectionLabel", _selectedLangCode);
             EqEnableCheck.Content = Localization.Get("EqEnableCheck", _selectedLangCode);
+            AutoDeviceEqCheck.Content = Localization.Get("AutoDeviceEqCheck", _selectedLangCode);
+            VolumeNormCheck.Content = Localization.Get("VolumeNormCheck", _selectedLangCode);
+            VisualizerCheck.Content = Localization.Get("VisualizerCheck", _selectedLangCode);
             LanguageLabel.Text = Localization.Get("LanguageLabel", _selectedLangCode);
             CloseBehaviorLabel.Text = Localization.Get("CloseBehaviorLabel", _selectedLangCode);
             MinimizeToTrayCheck.Content = Localization.Get("MinimizeToTrayCheck", _selectedLangCode);
@@ -330,6 +345,7 @@ namespace Nocturne
         private async Task LoadDevicesAsync()
         {
             RefreshBtn.IsEnabled = false;
+            _suppressDeviceChange = true;
             var items = new List<AudioDeviceItem>
             {
                 new() { DeviceId = "", Label = Localization.Get("DefaultDevice", _selectedLangCode) }
@@ -352,6 +368,7 @@ namespace Nocturne
             DeviceComboBox.ItemsSource = items;
             var match = items.FirstOrDefault(d => d.DeviceId == targetSavedId) ?? items[0];
             DeviceComboBox.SelectedItem = match;
+            _suppressDeviceChange = false;
             RefreshBtn.IsEnabled = true;
         }
 
@@ -397,6 +414,10 @@ namespace Nocturne
 
             _settings.EqualizerEnabled = EqEnableCheck.IsChecked == true;
             _settings.EqualizerPreset = _selectedEqPreset;
+            _settings.AutoDeviceEqProfile = AutoDeviceEqCheck.IsChecked == true;
+            _settings.EnableVolumeNormalization = VolumeNormCheck.IsChecked == true;
+            _settings.EnableSpectrumVisualizer = VisualizerCheck.IsChecked == true;
+
             for (int i = 0; i < 10; i++)
                 _settings.EqualizerBands[i] = (float)Math.Round(_eqSliders[i].Value, 1);
 
@@ -407,12 +428,24 @@ namespace Nocturne
             _settings.PrevHotkeyModifiers = _prevMod;
             _settings.PrevHotkeyVk = _prevVk;
 
+            string activeDevKey = "default";
             if (DeviceComboBox.SelectedItem is AudioDeviceItem selectedDevice)
             {
+                activeDevKey = string.IsNullOrWhiteSpace(selectedDevice.DeviceId) ? "default" : selectedDevice.DeviceId;
                 if (_selectedEngineMode.StartsWith("wasapi"))
                     _settings.WasapiDeviceId = selectedDevice.DeviceId;
                 else
                     _settings.AudioOutputDeviceId = selectedDevice.DeviceId;
+            }
+
+            if (_settings.AutoDeviceEqProfile)
+            {
+                _settings.DeviceEqProfiles[activeDevKey] = new DeviceEqProfile
+                {
+                    Enabled = _settings.EqualizerEnabled,
+                    Preset = _settings.EqualizerPreset,
+                    Bands = (float[])_settings.EqualizerBands.Clone()
+                };
             }
 
             if (LanguageComboBox.SelectedItem is ComboBoxItem selectedLang && selectedLang.Tag is string code)

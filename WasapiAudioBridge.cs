@@ -24,6 +24,7 @@ namespace Nocturne
         private string _mutedEndpointId = "";
         private bool _previousEndpointMuteState = false;
         private bool _eqEnabled;
+        private bool _normEnabled;
         private float[] _eqGains = new float[10];
         private readonly object _lock = new();
 
@@ -44,13 +45,22 @@ namespace Nocturne
             catch { }
         }
 
-        public void SetEqualizer(bool enabled, float[] gains)
+        public void SetDsp(bool eqEnabled, float[] gains, bool normalizationEnabled)
         {
             lock (_lock)
             {
-                _eqEnabled = enabled;
+                _eqEnabled = eqEnabled;
+                _normEnabled = normalizationEnabled;
                 _eqGains = gains != null && gains.Length == 10 ? (float[])gains.Clone() : new float[10];
-                _equalizer?.UpdateBands(_eqEnabled, _eqGains);
+                _equalizer?.UpdateDsp(_eqEnabled, _eqGains, _normEnabled);
+            }
+        }
+
+        public float[] GetSpectrumSnapshot()
+        {
+            lock (_lock)
+            {
+                return _equalizer?.GetSpectrumSnapshot() ?? new float[EqualizerSampleProvider.SpectrumBarCount];
             }
         }
 
@@ -107,6 +117,38 @@ namespace Nocturne
                             return (false, "Sistemde yalnızca tek ses çıkış cihazı aktif. WASAPI Exclusive köprüsü için dahili hoparlörün de etkin olması gerekir.");
                         }
 
+                        // Tek cihaz modunda da canlı FFT spektrum analizörü için loopback dinlemesi başlat
+                        _capture = new WasapiLoopbackCapture(targetDevice);
+                        _buffer = new BufferedWaveProvider(_capture.WaveFormat)
+                        {
+                            BufferDuration = TimeSpan.FromMilliseconds(250),
+                            DiscardOnBufferOverflow = true
+                        };
+                        _equalizer = new EqualizerSampleProvider(_buffer.ToSampleProvider());
+                        _equalizer.UpdateDsp(_eqEnabled, _eqGains, false);
+
+                        float[] monitorScratch = new float[2048];
+                        _capture.DataAvailable += (_, e) =>
+                        {
+                            if (e.BytesRecorded > 0 && _buffer != null && _equalizer != null)
+                            {
+                                _buffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+                                int bytesPerSample = _buffer.WaveFormat.BitsPerSample / 8;
+                                if (bytesPerSample > 0)
+                                {
+                                    int availableSamples = _buffer.BufferedBytes / bytesPerSample;
+                                    while (availableSamples > 0)
+                                    {
+                                        int toRead = Math.Min(monitorScratch.Length, availableSamples);
+                                        int read = _equalizer.Read(monitorScratch, 0, toRead);
+                                        if (read <= 0) break;
+                                        availableSamples -= read;
+                                    }
+                                }
+                            }
+                        };
+                        _capture.StartRecording();
+
                         ActiveTargetDeviceId = targetDevice.ID;
                         ActiveStreamBadge = formatText;
                         IsRunning = true;
@@ -145,7 +187,7 @@ namespace Nocturne
                     }
 
                     _equalizer = new EqualizerSampleProvider(sampleChain);
-                    _equalizer.UpdateBands(_eqEnabled, _eqGains);
+                    _equalizer.UpdateDsp(_eqEnabled, _eqGains, _normEnabled);
                     _output.Init(_equalizer);
 
                     _capture.DataAvailable += (_, e) =>

@@ -26,6 +26,10 @@
                                FontWeight="SemiBold" Foreground="#B87BFF"/>
                 </Border>
 
+                <!-- Gerçek Zamanlı FFT Spektrum Analizörü -->
+                <StackPanel x:Name="SpectrumPanel" DockPanel.Dock="Left" Orientation="Horizontal"
+                            VerticalAlignment="Center" Height="16" Margin="10,0,0,0" Visibility="Collapsed"/>
+
                 <!-- Sağ Taraf Butonları -->
                 <Button x:Name="SettingsBtn" DockPanel.Dock="Right" Content="⚙" Width="30" Height="24"
                         Background="Transparent" Foreground="#C8C8D4" BorderThickness="0"

@@ -13,14 +13,17 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
-using System.Windows.Media.Imaging;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Windows.Media;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using Windows.Storage.Streams;
 using Forms = System.Windows.Forms;
+using MediaPlayer = Windows.Media.Playback.MediaPlayer;
 
 namespace Nocturne
 {
@@ -48,6 +51,9 @@ namespace Nocturne
         private readonly DiscordRpcService _discordRpc = new();
         private CancellationTokenSource? _deviceChangeCts;
 
+        private readonly Border[] _spectrumBars = new Border[EqualizerSampleProvider.SpectrumBarCount];
+        private readonly DispatcherTimer _visualizerTimer;
+
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
@@ -74,32 +80,87 @@ namespace Nocturne
         public MainWindow()
         {
             InitializeComponent();
-            LoadWindowIcon();
+            InitializeSpectrumBars();
             UpdateLocalizedTooltips();
             SourceInitialized += MainWindow_SourceInitialized;
             Loaded += MainWindow_Loaded;
             Closing += MainWindow_Closing;
             _wasapiBridge.AudioDevicesChanged += OnAudioDevicesChanged;
-            _wasapiBridge.SetEqualizer(_settings.EqualizerEnabled, _settings.EqualizerBands);
+            _wasapiBridge.SetDsp(_settings.EqualizerEnabled, _settings.EqualizerBands, _settings.EnableVolumeNormalization);
             _discordRpc.Configure(_settings.EnableDiscordRpc);
             SetupTrayIcon();
+
+            _visualizerTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(33)
+            };
+            _visualizerTimer.Tick += VisualizerTimer_Tick;
+            _visualizerTimer.Start();
         }
 
-        private void LoadWindowIcon()
+        private void InitializeSpectrumBars()
         {
-            try
+            SpectrumPanel.Children.Clear();
+            var barBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(176, 86, 255));
+            for (int i = 0; i < _spectrumBars.Length; i++)
             {
-                string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
-                if (File.Exists(icoPath))
-                    Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
+                var bar = new Border
+                {
+                    Width = 2.5,
+                    Height = 2,
+                    Margin = new Thickness(1, 0, 1, 0),
+                    CornerRadius = new CornerRadius(1),
+                    Background = barBrush,
+                    VerticalAlignment = VerticalAlignment.Bottom
+                };
+                _spectrumBars[i] = bar;
+                SpectrumPanel.Children.Add(bar);
             }
-            catch { }
+        }
+
+        private void VisualizerTimer_Tick(object? sender, EventArgs e)
+        {
+            bool shouldShow = _settings.EnableSpectrumVisualizer && _wasapiBridge.IsRunning && IsVisible;
+            if (!shouldShow)
+            {
+                if (SpectrumPanel.Visibility == Visibility.Visible)
+                    SpectrumPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            if (SpectrumPanel.Visibility != Visibility.Visible)
+                SpectrumPanel.Visibility = Visibility.Visible;
+
+            float[] levels = _wasapiBridge.GetSpectrumSnapshot();
+            for (int i = 0; i < _spectrumBars.Length && i < levels.Length; i++)
+            {
+                _spectrumBars[i].Height = 2.0 + (levels[i] * 14.0);
+            }
         }
 
         private void UpdateAudioFormatBadge()
         {
-            string eqSuffix = (_wasapiBridge.IsRunning && _settings.EqualizerEnabled) ? " • EQ" : "";
-            AudioFormatText.Text = _wasapiBridge.ActiveStreamBadge + eqSuffix;
+            var tags = new List<string> { _wasapiBridge.ActiveStreamBadge };
+            if (_wasapiBridge.IsRunning && _settings.EqualizerEnabled)
+                tags.Add("EQ");
+            if (_wasapiBridge.IsRunning && _settings.EnableVolumeNormalization)
+                tags.Add("NORM");
+            AudioFormatText.Text = string.Join(" • ", tags);
+        }
+
+        private void ApplyDeviceEqProfileIfEnabled(string deviceId)
+        {
+            if (!_settings.AutoDeviceEqProfile)
+                return;
+
+            string key = string.IsNullOrWhiteSpace(deviceId) ? "default" : deviceId;
+            if (_settings.DeviceEqProfiles.TryGetValue(key, out var profile))
+            {
+                _settings.EqualizerEnabled = profile.Enabled;
+                _settings.EqualizerPreset = profile.Preset;
+                if (profile.Bands != null && profile.Bands.Length == 10)
+                    _settings.EqualizerBands = (float[])profile.Bands.Clone();
+            }
         }
 
         private void OnAudioDevicesChanged()
@@ -154,6 +215,7 @@ namespace Nocturne
                 bool targetConnected = activeDevices.Any(d => d.Id == _settings.WasapiDeviceId);
                 if (targetConnected && (!_wasapiBridge.IsRunning || _wasapiBridge.ActiveTargetDeviceId != _settings.WasapiDeviceId))
                 {
+                    ApplyDeviceEqProfileIfEnabled(_settings.WasapiDeviceId);
                     await ApplyAudioRoutingAsync(silentOnError: true);
                 }
             }
@@ -167,6 +229,8 @@ namespace Nocturne
 
         private void MainWindow_SourceInitialized(object? sender, EventArgs e)
         {
+            WindowIconHelper.ApplyHighDpiIcon(this);
+
             IntPtr hwnd = new WindowInteropHelper(this).Handle;
             int useDarkMode = 1;
             DwmSetWindowAttribute(hwnd, 20, ref useDarkMode, sizeof(int));
@@ -369,7 +433,7 @@ namespace Nocturne
             {
                 string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
                 if (File.Exists(icoPath))
-                    trayAppIcon = new Icon(icoPath);
+                    trayAppIcon = new Icon(icoPath, 32, 32);
             }
             catch { }
 
@@ -437,6 +501,7 @@ namespace Nocturne
         private void ExitApplication()
         {
             _isExplicitExit = true;
+            _visualizerTimer.Stop();
             _deviceChangeCts?.Cancel();
             _wasapiBridge.AudioDevicesChanged -= OnAudioDevicesChanged;
 
@@ -480,7 +545,7 @@ namespace Nocturne
 
         private async Task ApplyAudioRoutingAsync(bool silentOnError = false)
         {
-            _wasapiBridge.SetEqualizer(_settings.EqualizerEnabled, _settings.EqualizerBands);
+            _wasapiBridge.SetDsp(_settings.EqualizerEnabled, _settings.EqualizerBands, _settings.EnableVolumeNormalization);
 
             if (_settings.AudioEngineMode.StartsWith("wasapi"))
             {
@@ -993,7 +1058,7 @@ namespace Nocturne
                 UpdateTrayTexts();
                 RegisterGlobalHotKeys();
                 _discordRpc.Configure(_settings.EnableDiscordRpc);
-                _wasapiBridge.SetEqualizer(_settings.EqualizerEnabled, _settings.EqualizerBands);
+                _wasapiBridge.SetDsp(_settings.EqualizerEnabled, _settings.EqualizerBands, _settings.EnableVolumeNormalization);
 
                 bool routingChanged = prevMode != _settings.AudioEngineMode ||
                                       prevDevice != _settings.AudioOutputDeviceId ||
