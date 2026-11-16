@@ -649,6 +649,17 @@ namespace Nocturne
                     window.__nocturneSinkId = {escapedId};
                     window.__nocturneMediaElements = new Set();
                     window.__nocturneAudioContexts = new Set();
+                    window.__nocturnePosState = {{ duration: 0, position: 0, updatedAt: 0 }};
+
+                    function bindMediaEvents(el) {{
+                        if (!el || el.__nocturneBound) return;
+                        el.__nocturneBound = true;
+                        for (const evt of ['play', 'pause', 'loadedmetadata', 'durationchange', 'seeked']) {{
+                            el.addEventListener(evt, () => {{
+                                if (window.__pushNocturneState) window.__pushNocturneState();
+                            }}, {{ passive: true }});
+                        }}
+                    }}
 
                     const OrigAudioContext = window.AudioContext || window.webkitAudioContext;
                     if (OrigAudioContext) {{
@@ -668,6 +679,7 @@ namespace Nocturne
                     const origPlay = HTMLMediaElement.prototype.play;
                     HTMLMediaElement.prototype.play = function(...args) {{
                         window.__nocturneMediaElements.add(this);
+                        bindMediaEvents(this);
                         const target = window.__nocturneSinkId || '';
                         if (typeof this.setSinkId === 'function' && this.sinkId !== target) {{
                             this.setSinkId(target).catch(() => {{}});
@@ -702,9 +714,74 @@ namespace Nocturne
                         }};
                     }}
 
+                    const origSetPositionState = navigator.mediaSession?.setPositionState?.bind(navigator.mediaSession);
+                    if (origSetPositionState) {{
+                        navigator.mediaSession.setPositionState = function(state) {{
+                            if (state && typeof state.duration === 'number' && isFinite(state.duration) && state.duration > 0) {{
+                                window.__nocturnePosState = {{
+                                    duration: state.duration,
+                                    position: typeof state.position === 'number' && isFinite(state.position) ? state.position : 0,
+                                    updatedAt: Date.now()
+                                }};
+                            }}
+                            const res = origSetPositionState(state);
+                            if (window.__pushNocturneState) window.__pushNocturneState();
+                            return res;
+                        }};
+                    }}
+
+                    function parseClockSeconds(text) {{
+                        if (!text) return 0;
+                        const clean = text.trim().replace(/^-/, '');
+                        const parts = clean.split(':').map(n => parseInt(n, 10));
+                        if (parts.some(isNaN)) return 0;
+                        if (parts.length === 2) return parts[0] * 60 + parts[1];
+                        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                        return 0;
+                    }}
+
+                    function readDeezerTimes(media) {{
+                        let cur = media && isFinite(media.currentTime) ? media.currentTime : 0;
+                        let dur = media && isFinite(media.duration) && media.duration > 0 ? media.duration : 0;
+
+                        if (dur <= 0 && window.__nocturnePosState.duration > 0) {{
+                            dur = window.__nocturnePosState.duration;
+                            if (cur <= 0) {{
+                                const elapsed = media && !media.paused ? (Date.now() - window.__nocturnePosState.updatedAt) / 1000 : 0;
+                                cur = Math.min(dur, window.__nocturnePosState.position + elapsed);
+                            }}
+                        }}
+
+                        if (dur <= 0) {{
+                            const slider = document.querySelector('[role=""slider""][aria-valuemax]');
+                            if (slider) {{
+                                const maxVal = parseFloat(slider.getAttribute('aria-valuemax'));
+                                const nowVal = parseFloat(slider.getAttribute('aria-valuenow'));
+                                if (isFinite(maxVal) && maxVal > 1) {{
+                                    dur = maxVal;
+                                    if (cur <= 0 && isFinite(nowVal)) cur = nowVal;
+                                }}
+                            }}
+                        }}
+
+                        if (dur <= 0) {{
+                            const remEl = document.querySelector('[data-testid=""remaining_time""]');
+                            const elpEl = document.querySelector('[data-testid=""elapsed_time""]');
+                            const remSec = parseClockSeconds(remEl?.textContent);
+                            const elpSec = parseClockSeconds(elpEl?.textContent);
+                            if (elpSec > 0 && cur <= 0) cur = elpSec;
+                            if (remSec > 0) {{
+                                dur = (remEl?.textContent?.trim().startsWith('-')) ? (cur + remSec) : remSec;
+                            }}
+                        }}
+
+                        return {{ cur, dur }};
+                    }}
+
                     function getActiveMedia() {{
                         const list = [...document.querySelectorAll('audio, video'), ...window.__nocturneMediaElements];
-                        return list.find(m => !m.paused && m.duration > 0) || list.find(m => m.duration > 0) || list[0];
+                        list.forEach(bindMediaEvents);
+                        return list.find(m => !m.paused && m.readyState >= 2) || list.find(m => m.readyState >= 2) || list[0];
                     }}
 
                     window.__nocturneCommand = (cmd) => {{
@@ -746,7 +823,7 @@ namespace Nocturne
                         }}
                     }};
 
-                    setInterval(() => {{
+                    window.__pushNocturneState = () => {{
                         try {{
                             const meta = navigator.mediaSession?.metadata;
                             const media = getActiveMedia();
@@ -754,17 +831,20 @@ namespace Nocturne
                             if (meta && meta.artwork && meta.artwork.length > 0) {{
                                 art = meta.artwork[meta.artwork.length - 1].src || meta.artwork[0].src || '';
                             }}
+                            const times = readDeezerTimes(media);
                             const payload = {{
                                 Title: meta?.title || '',
                                 Artist: meta?.artist || '',
                                 Artwork: art,
                                 IsPlaying: media ? !media.paused : (navigator.mediaSession?.playbackState === 'playing'),
-                                CurrentTime: media && !isNaN(media.currentTime) ? media.currentTime : 0,
-                                Duration: media && !isNaN(media.duration) ? media.duration : 0
+                                CurrentTime: times.cur,
+                                Duration: times.dur
                             }};
                             window.chrome.webview.postMessage('NOCTURNE_STATE:' + JSON.stringify(payload));
                         }} catch (_) {{}}
-                    }}, 500);
+                    }};
+
+                    setInterval(window.__pushNocturneState, 500);
                 }})();
             ";
         }

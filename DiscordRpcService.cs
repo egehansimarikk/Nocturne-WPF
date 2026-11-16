@@ -7,11 +7,13 @@ namespace Nocturne
     {
         private const string DefaultClientId = "1571632416483967036";
         private DiscordRpcClient? _client;
+        private PlaybackStateInfo? _pendingState;
         private string _lastTitle = "";
         private string _lastArtist = "";
         private bool _lastIsPlaying = false;
         private double _lastDuration = 0;
-        private double _lastRemainingSec = -1;
+        private DateTime _expectedEndUtc = DateTime.MinValue;
+        private DateTime _lastSentUtc = DateTime.MinValue;
 
         public void Configure(bool enabled)
         {
@@ -29,6 +31,11 @@ namespace Nocturne
             try
             {
                 _client = new DiscordRpcClient(DefaultClientId);
+                _client.OnReady += (_, _) =>
+                {
+                    if (_pendingState != null)
+                        UpdatePresence(_pendingState);
+                };
                 _client.Initialize();
             }
             catch
@@ -39,6 +46,8 @@ namespace Nocturne
 
         public void UpdatePresence(PlaybackStateInfo state)
         {
+            _pendingState = state;
+
             if (_client == null || _client.IsDisposed || !_client.IsInitialized)
                 return;
 
@@ -49,34 +58,43 @@ namespace Nocturne
                     if (!string.IsNullOrEmpty(_lastTitle))
                     {
                         _lastTitle = "";
+                        _lastArtist = "";
                         _lastDuration = 0;
+                        _expectedEndUtc = DateTime.MinValue;
                         _client.ClearPresence();
                     }
                     return;
                 }
 
-                bool hasValidDuration = !double.IsNaN(state.Duration) && !double.IsInfinity(state.Duration) && state.Duration > 1;
-                double remaining = hasValidDuration && state.Duration >= state.CurrentTime
-                    ? state.Duration - state.CurrentTime
-                    : 0;
+                bool hasValidDuration = !double.IsNaN(state.Duration) && !double.IsInfinity(state.Duration) && state.Duration > 1.0;
+                double safeCurrent = hasValidDuration
+                    ? Math.Max(0, Math.Min(state.CurrentTime, state.Duration))
+                    : Math.Max(0, state.CurrentTime);
 
-                bool trackChanged = state.Title != _lastTitle || state.Artist != _lastArtist;
+                DateTime nowUtc = DateTime.UtcNow;
+                DateTime calculatedEndUtc = hasValidDuration
+                    ? nowUtc.AddSeconds(state.Duration - safeCurrent)
+                    : DateTime.MinValue;
+
+                bool trackChanged = state.Title != _lastTitle || (state.Artist ?? "") != _lastArtist;
                 bool playStateChanged = state.IsPlaying != _lastIsPlaying;
-                bool durationJustLoaded = _lastDuration <= 1 && hasValidDuration;
-                bool seekDetected = hasValidDuration && _lastRemainingSec >= 0 && Math.Abs(remaining - _lastRemainingSec) > 3.0;
+                bool durationJustLoaded = _lastDuration <= 1.0 && hasValidDuration;
+                bool seekDetected = state.IsPlaying && hasValidDuration && _expectedEndUtc != DateTime.MinValue &&
+                                    Math.Abs((calculatedEndUtc - _expectedEndUtc).TotalSeconds) > 2.5;
 
                 if (!trackChanged && !playStateChanged && !durationJustLoaded && !seekDetected)
-                {
-                    if (hasValidDuration)
-                        _lastRemainingSec = remaining;
                     return;
-                }
+
+                // Şarkı değişimi veya süre ilk yüklendiğinde bekleme yapma
+                if (!trackChanged && !durationJustLoaded && (nowUtc - _lastSentUtc).TotalMilliseconds < 800)
+                    return;
 
                 _lastTitle = state.Title;
                 _lastArtist = state.Artist ?? "";
                 _lastIsPlaying = state.IsPlaying;
                 _lastDuration = hasValidDuration ? state.Duration : 0;
-                _lastRemainingSec = hasValidDuration ? remaining : -1;
+                _expectedEndUtc = calculatedEndUtc;
+                _lastSentUtc = nowUtc;
 
                 var presence = new RichPresence
                 {
@@ -92,12 +110,12 @@ namespace Nocturne
                     }
                 };
 
-                if (state.IsPlaying && hasValidDuration)
+                if (state.IsPlaying)
                 {
-                    double safeCurrent = Math.Max(0, Math.Min(state.CurrentTime, state.Duration));
-                    DateTime startUtc = DateTime.UtcNow.AddSeconds(-safeCurrent);
-                    DateTime endUtc = startUtc.AddSeconds(state.Duration);
-                    presence.Timestamps = new Timestamps(startUtc, endUtc);
+                    DateTime startUtc = nowUtc.AddSeconds(-safeCurrent);
+                    presence.Timestamps = hasValidDuration
+                        ? new Timestamps(startUtc, calculatedEndUtc)
+                        : new Timestamps(startUtc);
                 }
 
                 _client.SetPresence(presence);
@@ -125,10 +143,11 @@ namespace Nocturne
             finally
             {
                 _client = null;
+                _pendingState = null;
                 _lastTitle = "";
                 _lastArtist = "";
                 _lastDuration = 0;
-                _lastRemainingSec = -1;
+                _expectedEndUtc = DateTime.MinValue;
             }
         }
 
