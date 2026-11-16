@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
@@ -26,13 +27,24 @@ namespace Nocturne
         public MiniPlayerWindow(Action<string> sendCommand, Action restoreMainWindow)
         {
             InitializeComponent();
-            Icon = IconHelper.GetWindowIcon();
+            LoadWindowIcon();
             _sendCommand = sendCommand;
             _restoreMainWindow = restoreMainWindow;
 
             var workArea = SystemParameters.WorkArea;
             Left = workArea.Right - Width - 16;
             Top = workArea.Bottom - Height - 16;
+        }
+
+        private void LoadWindowIcon()
+        {
+            try
+            {
+                string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
+                if (File.Exists(icoPath))
+                    Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
+            }
+            catch { }
         }
 
         public void UpdatePlaybackState(PlaybackStateInfo state, string lang)

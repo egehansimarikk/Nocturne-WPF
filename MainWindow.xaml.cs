@@ -13,6 +13,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media.Imaging;
 using Microsoft.Web.WebView2.Core;
 using Windows.Media;
 using Windows.Media.Core;
@@ -70,7 +71,7 @@ namespace Nocturne
         public MainWindow()
         {
             InitializeComponent();
-            Icon = IconHelper.GetWindowIcon();
+            LoadWindowIcon();
             UpdateLocalizedTooltips();
             SourceInitialized += MainWindow_SourceInitialized;
             Loaded += MainWindow_Loaded;
@@ -78,6 +79,17 @@ namespace Nocturne
             _wasapiBridge.AudioDevicesChanged += OnAudioDevicesChanged;
             _discordRpc.Configure(_settings.EnableDiscordRpc);
             SetupTrayIcon();
+        }
+
+        private void LoadWindowIcon()
+        {
+            try
+            {
+                string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
+                if (File.Exists(icoPath))
+                    Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
+            }
+            catch { }
         }
 
         private void OnAudioDevicesChanged()
@@ -147,7 +159,6 @@ namespace Nocturne
             IntPtr hwnd = new WindowInteropHelper(this).Handle;
             int useDarkMode = 1;
             DwmSetWindowAttribute(hwnd, 20, ref useDarkMode, sizeof(int));
-            IconHelper.ApplyWindowIcons(this);
 
             _hwndSource = HwndSource.FromHwnd(hwnd);
             _hwndSource?.AddHook(WndProc);
@@ -338,9 +349,18 @@ namespace Nocturne
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add(_trayExitItem);
 
+            Icon trayAppIcon = SystemIcons.Application;
+            try
+            {
+                string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
+                if (File.Exists(icoPath))
+                    trayAppIcon = new Icon(icoPath);
+            }
+            catch { }
+
             _trayIcon = new Forms.NotifyIcon
             {
-                Icon = IconHelper.GetTrayIcon(),
+                Icon = trayAppIcon,
                 Text = "Nocturne",
                 ContextMenuStrip = menu,
                 Visible = true

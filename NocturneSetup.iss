@@ -26,8 +26,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "C:\Users\Egehan\source\repos\Nocturne\bin\Release\net10.0-windows10.0.19041.0\*"; DestDir: "{app}"; Excludes: "*.pdb,win-x64\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Nocturne"; Filename: "{app}\Nocturne.exe"; IconFilename: "{app}\Assets\nocturne.ico"; AppUserModelID: "com.egehansimarikk.nocturne"
-Name: "{autodesktop}\Nocturne"; Filename: "{app}\Nocturne.exe"; IconFilename: "{app}\Assets\nocturne.ico"; AppUserModelID: "com.egehansimarikk.nocturne"; Tasks: desktopicon
+Name: "{group}\Nocturne"; Filename: "{app}\Nocturne.exe"; AppUserModelID: "com.egehansimarikk.nocturne"
+Name: "{autodesktop}\Nocturne"; Filename: "{app}\Nocturne.exe"; AppUserModelID: "com.egehansimarikk.nocturne"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Nocturne.exe"; Description: "{cm:LaunchProgram,Nocturne}"; Flags: nowait postinstall skipifsilent

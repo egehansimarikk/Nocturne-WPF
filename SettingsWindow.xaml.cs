@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -7,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media.Imaging;
 
 namespace Nocturne
 {
@@ -33,7 +35,7 @@ namespace Nocturne
         public SettingsWindow(AppSettings settings, Func<Task<List<AudioDeviceItem>>> fetchWebViewDevicesAsync)
         {
             InitializeComponent();
-            IconHelper.ApplyWindowIcons(this);
+            LoadWindowIcon();
             _settings = settings;
             _fetchWebViewDevicesAsync = fetchWebViewDevicesAsync;
             _selectedLangCode = string.IsNullOrWhiteSpace(_settings.Language) ? "auto" : _settings.Language;
@@ -63,6 +65,17 @@ namespace Nocturne
             PopulateLanguages();
             ApplyLocalizedTexts();
             Loaded += async (_, _) => await LoadDevicesAsync();
+        }
+
+        private void LoadWindowIcon()
+        {
+            try
+            {
+                string icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
+                if (File.Exists(icoPath))
+                    Icon = BitmapFrame.Create(new Uri(icoPath, UriKind.Absolute));
+            }
+            catch { }
         }
 
         private void RefreshHotkeyTexts()

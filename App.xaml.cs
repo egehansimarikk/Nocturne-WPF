@@ -16,18 +16,15 @@ namespace Nocturne
 
         protected override void OnStartup(StartupEventArgs e)
         {
-            IconHelper.EnsureTrimmedIcoFile();
             SetCurrentProcessExplicitAppUserModelID(AppId);
             RegisterAppUserModelId();
             EnsureStartMenuShortcut();
             base.OnStartup(e);
         }
 
-        private static string GetResolvedIconPath()
+        private static string GetIconPath()
         {
-            return File.Exists(IconHelper.TrimmedIcoPath)
-                ? IconHelper.TrimmedIcoPath
-                : Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
+            return Path.Combine(AppContext.BaseDirectory, "Assets", "nocturne.ico");
         }
 
         private static void RegisterAppUserModelId()
@@ -40,7 +37,7 @@ namespace Nocturne
                     key.SetValue("DisplayName", "Nocturne", RegistryValueKind.String);
                     key.SetValue("IconBackgroundColor", "0", RegistryValueKind.String);
 
-                    string icoPath = GetResolvedIconPath();
+                    string icoPath = GetIconPath();
                     if (File.Exists(icoPath))
                         key.SetValue("IconUri", icoPath, RegistryValueKind.String);
                 }
@@ -58,15 +55,12 @@ namespace Nocturne
 
                 string programsDir = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
                 string shortcutPath = Path.Combine(programsDir, "Nocturne.lnk");
-                string icoPath = GetResolvedIconPath();
 
                 var shellLink = (IShellLinkW)new ShellLink();
                 shellLink.SetPath(exePath);
                 shellLink.SetWorkingDirectory(AppContext.BaseDirectory);
                 shellLink.SetDescription("Nocturne");
-
-                if (File.Exists(icoPath))
-                    shellLink.SetIconLocation(icoPath, 0);
+                shellLink.SetIconLocation(exePath, 0);
 
                 var propertyStore = (IPropertyStore)shellLink;
                 var appIdKey = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
