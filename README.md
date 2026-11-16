@@ -38,7 +38,7 @@
 
 - Windows 10 (19041+) or Windows 11 (x64)
 - [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (pre-installed on Windows 11)
-- [.NET 10 SDK](https://dotnet.microsoft.com/) *(only required if building from source)*
+- [.NET 10 SDK](https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.404/dotnet-sdk-10.0.404-win-x64.exe) *(only required if building from source)*
 
 ### Build & Publish from Source
 
@@ -75,7 +75,7 @@ To build the Windows installer (`NocturneSetup-1.0.0-win-x64.exe`), open `Noctur
 
 - Windows 10 (19041+) veya Windows 11 (x64)
 - [Microsoft Edge WebView2 Çalışma Zamanı](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (Windows 11'de yüklü gelir)
-- [.NET 10 SDK](https://dotnet.microsoft.com/) *(yalnızca kaynak koddan derlemek için gereklidir)*
+- [.NET 10 SDK](https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.404/dotnet-sdk-10.0.404-win-x64.exe) *(yalnızca kaynak koddan derlemek için gereklidir)*
 
 ### Kaynak Koddan Derleme
 
