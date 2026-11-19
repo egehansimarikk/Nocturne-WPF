@@ -4,6 +4,7 @@ using System.Linq;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace Nocturne
 {
@@ -11,6 +12,7 @@ namespace Nocturne
     {
         public string Id { get; set; } = "";
         public string Name { get; set; } = "";
+        public string FormatSummary { get; set; } = "";
     }
 
     public sealed class WasapiAudioBridge : IMMNotificationClient, IDisposable
@@ -64,6 +66,27 @@ namespace Nocturne
             }
         }
 
+        public static string GetDeviceFormatSummary(string deviceId)
+        {
+            try
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                MMDevice dev = string.IsNullOrWhiteSpace(deviceId)
+                    ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
+                    : enumerator.GetDevice(deviceId);
+                using (dev)
+                {
+                    var fmt = dev.AudioClient.MixFormat;
+                    double khz = Math.Round(fmt.SampleRate / 1000.0, 1);
+                    return $"{khz:0.#} kHz / {fmt.BitsPerSample}-bit";
+                }
+            }
+            catch
+            {
+                return "48 kHz / 32-bit";
+            }
+        }
+
         public static List<WasapiDeviceInfo> GetOutputDevices()
         {
             var list = new List<WasapiDeviceInfo>();
@@ -73,15 +96,34 @@ namespace Nocturne
                 var endpoints = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
                 foreach (var dev in endpoints)
                 {
+                    var fmt = dev.AudioClient.MixFormat;
+                    double khz = Math.Round(fmt.SampleRate / 1000.0, 1);
                     list.Add(new WasapiDeviceInfo
                     {
                         Id = dev.ID,
-                        Name = dev.FriendlyName
+                        Name = dev.FriendlyName,
+                        FormatSummary = $"{khz:0.#} kHz / {fmt.BitsPerSample}-bit"
                     });
                 }
             }
             catch { }
             return list;
+        }
+
+        private static IWaveProvider BuildExclusivePcmProvider(MMDevice targetDevice, ISampleProvider eqProvider, out int negotiatedBits)
+        {
+            int rate = eqProvider.WaveFormat.SampleRate;
+            int channels = eqProvider.WaveFormat.Channels;
+
+            var pcm24 = new WaveFormat(rate, 24, channels);
+            if (targetDevice.AudioClient.IsFormatSupported(AudioClientShareMode.Exclusive, pcm24))
+            {
+                negotiatedBits = 24;
+                return new SampleToWaveProvider24(eqProvider);
+            }
+
+            negotiatedBits = 16;
+            return new SampleToWaveProvider16(eqProvider);
         }
 
         public (bool Success, string ErrorMessage) Start(string deviceId, bool exclusiveMode)
@@ -105,19 +147,16 @@ namespace Nocturne
 
                     var mixFmt = targetDevice.AudioClient.MixFormat;
                     double khz = Math.Round(mixFmt.SampleRate / 1000.0, 1);
-                    string modeLabel = exclusiveMode ? "WASAPI Exclusive" : "WASAPI Shared";
-                    string formatText = $"{khz:0.#} kHz / {mixFmt.BitsPerSample}-bit • {modeLabel}";
 
+                    // Hedef dışındaki ikinci ses çıkışını yakalama köprüsü olarak kullan
                     MMDevice? captureDevice = allActive.FirstOrDefault(d => d.ID != targetDevice.ID);
 
+                    // Tek cihazlı kurulum:
+                    // WebView2 DRM korumalı sesi doğrudan seçilen cihaza verir;
+                    // Exclusive kilidi açılırsa Windows Shared Mixer kapanıp WebView2'yi susturacağı için
+                    // tek cihazda güvenli Shared Direct + Loopback analizör modunda kesintisiz çalar.
                     if (captureDevice == null)
                     {
-                        if (exclusiveMode)
-                        {
-                            return (false, "Sistemde yalnızca tek ses çıkış cihazı aktif. WASAPI Exclusive köprüsü için dahili hoparlörün de etkin olması gerekir.");
-                        }
-
-                        // Tek cihaz modunda da canlı FFT spektrum analizörü için loopback dinlemesi başlat
                         _capture = new WasapiLoopbackCapture(targetDevice);
                         _buffer = new BufferedWaveProvider(_capture.WaveFormat)
                         {
@@ -149,12 +188,15 @@ namespace Nocturne
                         };
                         _capture.StartRecording();
 
+                        string singleLabel = exclusiveMode ? "WASAPI Shared (Single-Dev)" : "WASAPI Shared";
                         ActiveTargetDeviceId = targetDevice.ID;
-                        ActiveStreamBadge = formatText;
+                        ActiveStreamBadge = $"{khz:0.#} kHz / {mixFmt.BitsPerSample}-bit • {singleLabel}";
                         IsRunning = true;
                         return (true, "");
                     }
 
+                    // Çift cihazlı kurulum (Harici DAC / Kulaklık + Dahili Hoparlör veya VB-Cable):
+                    // WebView2 sesi sessize alınan captureDevice'a gider, C# motoru sesi alıp hedef cihaza Exclusive/Shared basar.
                     ActiveTargetDeviceId = targetDevice.ID;
                     ActiveCaptureDeviceId = captureDevice.ID;
 
@@ -165,30 +207,41 @@ namespace Nocturne
                         DiscardOnBufferOverflow = true
                     };
 
-                    var shareMode = exclusiveMode
+                    var bridgeShareMode = exclusiveMode
                         ? AudioClientShareMode.Exclusive
                         : AudioClientShareMode.Shared;
 
-                    _output = new WasapiOut(targetDevice, shareMode, useEventSync: true, latency: 50);
+                    _output = new WasapiOut(targetDevice, bridgeShareMode, useEventSync: true, latency: 50);
 
-                    ISampleProvider sampleChain;
+                    ISampleProvider bridgeChain;
                     if (_capture.WaveFormat.SampleRate != mixFmt.SampleRate ||
                         _capture.WaveFormat.Channels != mixFmt.Channels)
                     {
-                        _resampler = new MediaFoundationResampler(_buffer, mixFmt)
+                        var targetFloatFmt = WaveFormat.CreateIeeeFloatWaveFormat(mixFmt.SampleRate, mixFmt.Channels);
+                        _resampler = new MediaFoundationResampler(_buffer, targetFloatFmt)
                         {
                             ResamplerQuality = 60
                         };
-                        sampleChain = _resampler.ToSampleProvider();
+                        bridgeChain = _resampler.ToSampleProvider();
                     }
                     else
                     {
-                        sampleChain = _buffer.ToSampleProvider();
+                        bridgeChain = _buffer.ToSampleProvider();
                     }
 
-                    _equalizer = new EqualizerSampleProvider(sampleChain);
+                    _equalizer = new EqualizerSampleProvider(bridgeChain);
                     _equalizer.UpdateDsp(_eqEnabled, _eqGains, _normEnabled);
-                    _output.Init(_equalizer);
+
+                    int bridgeBits = mixFmt.BitsPerSample;
+                    if (exclusiveMode)
+                    {
+                        var pcmProvider = BuildExclusivePcmProvider(targetDevice, _equalizer, out bridgeBits);
+                        _output.Init(pcmProvider);
+                    }
+                    else
+                    {
+                        _output.Init(_equalizer);
+                    }
 
                     _capture.DataAvailable += (_, e) =>
                     {
@@ -200,7 +253,9 @@ namespace Nocturne
 
                     _output.Play();
                     _capture.StartRecording();
-                    ActiveStreamBadge = formatText;
+
+                    string modeLabel = exclusiveMode ? "WASAPI Exclusive" : "WASAPI Shared";
+                    ActiveStreamBadge = $"{khz:0.#} kHz / {bridgeBits}-bit • {modeLabel}";
                     IsRunning = true;
 
                     _mutedEndpointId = captureDevice.ID;

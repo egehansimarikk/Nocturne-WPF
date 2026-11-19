@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -8,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using Microsoft.Win32;
 
 namespace Nocturne
 {
@@ -15,6 +17,7 @@ namespace Nocturne
     {
         public string DeviceId { get; set; } = "";
         public string Label { get; set; } = "";
+        public string FormatInfo { get; set; } = "";
     }
 
     public partial class SettingsWindow : Window
@@ -29,15 +32,6 @@ namespace Nocturne
 
         private readonly Slider[] _eqSliders = new Slider[10];
         private readonly TextBlock[] _eqValueTexts = new TextBlock[10];
-
-        private static readonly Dictionary<string, float[]> EqPresets = new()
-        {
-            ["flat"] = new float[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-            ["bass"] = new float[] { 6.5f, 5.5f, 4.0f, 1.5f, 0, 0, 0, 1.0f, 1.5f, 2.0f },
-            ["vocal"] = new float[] { -2.0f, -1.0f, 0, 1.5f, 3.5f, 4.5f, 3.0f, 1.5f, 0.5f, 0 },
-            ["vshape"] = new float[] { 5.0f, 4.0f, 1.5f, -1.5f, -2.5f, -1.5f, 1.5f, 3.5f, 4.5f, 5.0f },
-            ["treble"] = new float[] { 0, 0, 0, 0, 0.5f, 1.5f, 3.0f, 4.5f, 5.5f, 6.0f }
-        };
 
         private uint _playMod, _playVk;
         private uint _nextMod, _nextVk;
@@ -92,7 +86,7 @@ namespace Nocturne
 
         private void BuildEqualizerSliders()
         {
-            string[] labels = { "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
+            string[] labels = { "32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
             EqBandsGrid.Children.Clear();
 
             for (int i = 0; i < 10; i++)
@@ -122,7 +116,7 @@ namespace Nocturne
                     Minimum = -12,
                     Maximum = 12,
                     Value = initialGain,
-                    TickFrequency = 1,
+                    TickFrequency = 0.5,
                     IsSnapToTickEnabled = false,
                     IsMoveToPointEnabled = true,
                     HorizontalAlignment = HorizontalAlignment.Center,
@@ -163,11 +157,19 @@ namespace Nocturne
         {
             _suppressEqEvents = true;
             EqPresetComboBox.Items.Clear();
+
             EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "flat", Content = Localization.Get("EqPresetFlat", _selectedLangCode) });
-            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "bass", Content = Localization.Get("EqPresetBass", _selectedLangCode) });
-            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "vocal", Content = Localization.Get("EqPresetVocal", _selectedLangCode) });
-            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "vshape", Content = Localization.Get("EqPresetVShape", _selectedLangCode) });
-            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "treble", Content = Localization.Get("EqPresetTreble", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "harman_over_ear", Content = Localization.Get("EqPresetHarmanOverEar", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "harman_iem", Content = Localization.Get("EqPresetHarmanIem", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "warm_acoustic", Content = Localization.Get("EqPresetWarmAcoustic", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "vocal_forward", Content = Localization.Get("EqPresetVocalForward", _selectedLangCode) });
+            EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "bass_boost", Content = Localization.Get("EqPresetBass", _selectedLangCode) });
+
+            foreach (var customName in _settings.CustomEqPresets.Keys.OrderBy(k => k))
+            {
+                EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = customName, Content = $"★ {customName}" });
+            }
+
             EqPresetComboBox.Items.Add(new ComboBoxItem { Tag = "custom", Content = Localization.Get("EqPresetCustom", _selectedLangCode) });
             SelectEqPresetItem(_selectedEqPreset);
             _suppressEqEvents = false;
@@ -176,14 +178,32 @@ namespace Nocturne
         private void SelectEqPresetItem(string tag)
         {
             _suppressEqEvents = true;
+            ComboBoxItem? matched = null;
             foreach (ComboBoxItem item in EqPresetComboBox.Items)
             {
-                if ((string)item.Tag == tag)
+                if (string.Equals((string)item.Tag, tag, StringComparison.OrdinalIgnoreCase))
                 {
-                    EqPresetComboBox.SelectedItem = item;
+                    matched = item;
                     break;
                 }
             }
+
+            if (matched == null)
+            {
+                foreach (ComboBoxItem item in EqPresetComboBox.Items)
+                {
+                    if ((string)item.Tag == "custom")
+                    {
+                        matched = item;
+                        break;
+                    }
+                }
+            }
+
+            EqPresetComboBox.SelectedItem = matched;
+            DeleteProfileBtn.Visibility = _settings.CustomEqPresets.ContainsKey(tag)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             _suppressEqEvents = false;
         }
 
@@ -195,7 +215,11 @@ namespace Nocturne
             if (EqPresetComboBox.SelectedItem is ComboBoxItem item && item.Tag is string preset)
             {
                 _selectedEqPreset = preset;
-                if (EqPresets.TryGetValue(preset, out var gains))
+                DeleteProfileBtn.Visibility = _settings.CustomEqPresets.ContainsKey(preset)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+
+                if (_settings.TryGetEqPresetBands(preset, out var gains))
                 {
                     _suppressEqEvents = true;
                     for (int i = 0; i < 10; i++)
@@ -205,24 +229,150 @@ namespace Nocturne
             }
         }
 
-        private void DeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void SaveProfileBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (_suppressDeviceChange || AutoDeviceEqCheck.IsChecked != true)
+            NewProfileNameBox.Text = "";
+            NewProfileBar.Visibility = Visibility.Visible;
+            NewProfileNameBox.Focus();
+        }
+
+        private void ConfirmProfileSaveBtn_Click(object sender, RoutedEventArgs e)
+        {
+            SaveCurrentAsNamedProfile();
+        }
+
+        private void CancelProfileSaveBtn_Click(object sender, RoutedEventArgs e)
+        {
+            NewProfileBar.Visibility = Visibility.Collapsed;
+        }
+
+        private void NewProfileNameBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                e.Handled = true;
+                SaveCurrentAsNamedProfile();
+            }
+            else if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                NewProfileBar.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void SaveCurrentAsNamedProfile()
+        {
+            string name = NewProfileNameBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(name) ||
+                string.Equals(name, "custom", StringComparison.OrdinalIgnoreCase) ||
+                AppSettings.BuiltInEqPresets.ContainsKey(name))
+            {
+                return;
+            }
+
+            float[] currentBands = new float[10];
+            for (int i = 0; i < 10; i++)
+                currentBands[i] = (float)Math.Round(_eqSliders[i].Value, 1);
+
+            _settings.CustomEqPresets[name] = currentBands;
+            _selectedEqPreset = name;
+            EqEnableCheck.IsChecked = true;
+            NewProfileBar.Visibility = Visibility.Collapsed;
+
+            PopulateEqPresets();
+            SelectEqPresetItem(name);
+        }
+
+        private void DeleteProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_settings.CustomEqPresets.Remove(_selectedEqPreset))
+            {
+                _selectedEqPreset = "custom";
+                PopulateEqPresets();
+                SelectEqPresetItem("custom");
+            }
+        }
+
+        private void ImportAutoEqBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog
+            {
+                Filter = "AutoEQ / EqualizerAPO (*.txt)|*.txt|All Files (*.*)|*.*",
+                Title = "AutoEQ FixedBandEQ (.txt)"
+            };
+
+            if (dlg.ShowDialog(this) != true)
                 return;
 
-            if (DeviceComboBox.SelectedItem is AudioDeviceItem dev)
+            try
             {
-                string key = string.IsNullOrWhiteSpace(dev.DeviceId) ? "default" : dev.DeviceId;
-                if (_settings.DeviceEqProfiles.TryGetValue(key, out var profile))
+                string content = File.ReadAllText(dlg.FileName);
+                if (!AppSettings.TryParseAutoEqText(content, out var parsedBands))
                 {
-                    EqEnableCheck.IsChecked = profile.Enabled;
-                    _selectedEqPreset = profile.Preset;
-                    SelectEqPresetItem(_selectedEqPreset);
-                    _suppressEqEvents = true;
-                    for (int i = 0; i < 10 && profile.Bands != null && i < profile.Bands.Length; i++)
-                        _eqSliders[i].Value = profile.Bands[i];
-                    _suppressEqEvents = false;
+                    MessageBox.Show(this, Localization.Get("AutoEqImportError", _selectedLangCode), "Nocturne EQ", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
                 }
+
+                string baseName = Path.GetFileNameWithoutExtension(dlg.FileName)
+                    .Replace("FixedBandEQ", "", StringComparison.OrdinalIgnoreCase)
+                    .Replace("GraphicEQ", "", StringComparison.OrdinalIgnoreCase)
+                    .Trim(' ', '-', '_');
+
+                if (string.IsNullOrWhiteSpace(baseName))
+                    baseName = "AutoEQ Profile";
+
+                _settings.CustomEqPresets[baseName] = parsedBands;
+                _selectedEqPreset = baseName;
+                EqEnableCheck.IsChecked = true;
+
+                _suppressEqEvents = true;
+                for (int i = 0; i < 10; i++)
+                    _eqSliders[i].Value = parsedBands[i];
+                _suppressEqEvents = false;
+
+                PopulateEqPresets();
+                SelectEqPresetItem(baseName);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Nocturne EQ", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private async Task UpdateHardwareFormatBadgeAsync(AudioDeviceItem? dev)
+        {
+            if (dev != null && !string.IsNullOrWhiteSpace(dev.FormatInfo))
+            {
+                HardwareFormatText.Text = dev.FormatInfo;
+                return;
+            }
+
+            string devId = dev?.DeviceId ?? "";
+            string fmt = await Task.Run(() => WasapiAudioBridge.GetDeviceFormatSummary(devId));
+            if (dev != null)
+                dev.FormatInfo = fmt;
+
+            HardwareFormatText.Text = string.IsNullOrWhiteSpace(fmt) ? "48 kHz / 32-bit" : fmt;
+        }
+
+        private async void DeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var selectedDev = DeviceComboBox.SelectedItem as AudioDeviceItem;
+            await UpdateHardwareFormatBadgeAsync(selectedDev);
+
+            if (_suppressDeviceChange || AutoDeviceEqCheck.IsChecked != true || selectedDev == null)
+                return;
+
+            string key = string.IsNullOrWhiteSpace(selectedDev.DeviceId) ? "default" : selectedDev.DeviceId;
+            if (_settings.DeviceEqProfiles.TryGetValue(key, out var profile))
+            {
+                EqEnableCheck.IsChecked = profile.Enabled;
+                _selectedEqPreset = profile.Preset;
+                SelectEqPresetItem(_selectedEqPreset);
+                _suppressEqEvents = true;
+                for (int i = 0; i < 10 && profile.Bands != null && i < profile.Bands.Length; i++)
+                    _eqSliders[i].Value = profile.Bands[i];
+                _suppressEqEvents = false;
             }
         }
 
@@ -322,6 +472,9 @@ namespace Nocturne
             AudioOutputLabel.Text = Localization.Get("AudioOutputLabel", _selectedLangCode);
             RefreshBtn.Content = Localization.Get("RefreshDevices", _selectedLangCode);
             EqSectionLabel.Text = Localization.Get("EqSectionLabel", _selectedLangCode);
+            SaveProfileBtn.Content = Localization.Get("SaveProfileBtn", _selectedLangCode);
+            DeleteProfileBtn.Content = Localization.Get("DeleteProfileBtn", _selectedLangCode);
+            ImportAutoEqBtn.Content = Localization.Get("ImportAutoEqBtn", _selectedLangCode);
             EqEnableCheck.Content = Localization.Get("EqEnableCheck", _selectedLangCode);
             AutoDeviceEqCheck.Content = Localization.Get("AutoDeviceEqCheck", _selectedLangCode);
             VolumeNormCheck.Content = Localization.Get("VolumeNormCheck", _selectedLangCode);
@@ -346,16 +499,27 @@ namespace Nocturne
         {
             RefreshBtn.IsEnabled = false;
             _suppressDeviceChange = true;
+            string defaultFmt = await Task.Run(() => WasapiAudioBridge.GetDeviceFormatSummary(""));
             var items = new List<AudioDeviceItem>
             {
-                new() { DeviceId = "", Label = Localization.Get("DefaultDevice", _selectedLangCode) }
+                new()
+                {
+                    DeviceId = "",
+                    Label = Localization.Get("DefaultDevice", _selectedLangCode),
+                    FormatInfo = defaultFmt
+                }
             };
 
             string targetSavedId;
             if (_selectedEngineMode.StartsWith("wasapi"))
             {
-                var wasapiDevices = WasapiAudioBridge.GetOutputDevices();
-                items.AddRange(wasapiDevices.Select(d => new AudioDeviceItem { DeviceId = d.Id, Label = d.Name }));
+                var wasapiDevices = await Task.Run(() => WasapiAudioBridge.GetOutputDevices());
+                items.AddRange(wasapiDevices.Select(d => new AudioDeviceItem
+                {
+                    DeviceId = d.Id,
+                    Label = d.Name,
+                    FormatInfo = d.FormatSummary
+                }));
                 targetSavedId = _settings.WasapiDeviceId;
             }
             else
@@ -368,6 +532,7 @@ namespace Nocturne
             DeviceComboBox.ItemsSource = items;
             var match = items.FirstOrDefault(d => d.DeviceId == targetSavedId) ?? items[0];
             DeviceComboBox.SelectedItem = match;
+            await UpdateHardwareFormatBadgeAsync(match);
             _suppressDeviceChange = false;
             RefreshBtn.IsEnabled = true;
         }

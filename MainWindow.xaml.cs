@@ -34,6 +34,7 @@ namespace Nocturne
         private Forms.ToolStripMenuItem? _trayShowItem;
         private Forms.ToolStripMenuItem? _trayMiniItem;
         private Forms.ToolStripMenuItem? _trayUnlockMiniItem;
+        private Forms.ToolStripMenuItem? _trayEqMenuItem;
         private Forms.ToolStripMenuItem? _trayExitItem;
         private MiniPlayerWindow? _miniPlayer;
         private TrackOsdWindow? _osdWindow;
@@ -50,6 +51,7 @@ namespace Nocturne
         private readonly WasapiAudioBridge _wasapiBridge = new();
         private readonly DiscordRpcService _discordRpc = new();
         private CancellationTokenSource? _deviceChangeCts;
+        private readonly Task<CoreWebView2Environment> _webViewEnvTask;
 
         private readonly Border[] _spectrumBars = new Border[EqualizerSampleProvider.SpectrumBarCount];
         private readonly DispatcherTimer _visualizerTimer;
@@ -79,23 +81,64 @@ namespace Nocturne
 
         public MainWindow()
         {
+            _webViewEnvTask = CreateWebViewEnvironmentAsync();
+
             InitializeComponent();
             InitializeSpectrumBars();
             UpdateLocalizedTooltips();
             SourceInitialized += MainWindow_SourceInitialized;
             Loaded += MainWindow_Loaded;
+            IsVisibleChanged += (_, _) => SyncVisualizerTimerState();
             Closing += MainWindow_Closing;
+
             _wasapiBridge.AudioDevicesChanged += OnAudioDevicesChanged;
             _wasapiBridge.SetDsp(_settings.EqualizerEnabled, _settings.EqualizerBands, _settings.EnableVolumeNormalization);
             _discordRpc.Configure(_settings.EnableDiscordRpc);
             SetupTrayIcon();
 
-            _visualizerTimer = new DispatcherTimer
+            _visualizerTimer = new DispatcherTimer(DispatcherPriority.Render)
             {
                 Interval = TimeSpan.FromMilliseconds(33)
             };
             _visualizerTimer.Tick += VisualizerTimer_Tick;
-            _visualizerTimer.Start();
+        }
+
+        private Task<CoreWebView2Environment> CreateWebViewEnvironmentAsync()
+        {
+            string userDataFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Nocturne",
+                "WebView2Data"
+            );
+
+            string targetLang = _settings.Language == "auto"
+                ? CultureInfo.CurrentUICulture.Name
+                : (_settings.Language == "tr" ? "tr-TR" : "en-US");
+
+            var options = new CoreWebView2EnvironmentOptions
+            {
+                Language = targetLang,
+                AdditionalBrowserArguments = "--disable-features=HardwareMediaKeyHandling,MediaSessionService --autoplay-policy=no-user-gesture-required"
+            };
+
+            return CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
+        }
+
+        private void SyncVisualizerTimerState()
+        {
+            bool shouldRun = _settings.EnableSpectrumVisualizer && _wasapiBridge.IsRunning && IsVisible;
+            if (shouldRun)
+            {
+                SpectrumPanel.Visibility = Visibility.Visible;
+                if (!_visualizerTimer.IsEnabled)
+                    _visualizerTimer.Start();
+            }
+            else
+            {
+                if (_visualizerTimer.IsEnabled)
+                    _visualizerTimer.Stop();
+                SpectrumPanel.Visibility = Visibility.Collapsed;
+            }
         }
 
         private void InitializeSpectrumBars()
@@ -120,16 +163,11 @@ namespace Nocturne
 
         private void VisualizerTimer_Tick(object? sender, EventArgs e)
         {
-            bool shouldShow = _settings.EnableSpectrumVisualizer && _wasapiBridge.IsRunning && IsVisible;
-            if (!shouldShow)
+            if (!_settings.EnableSpectrumVisualizer || !_wasapiBridge.IsRunning || !IsVisible)
             {
-                if (SpectrumPanel.Visibility == Visibility.Visible)
-                    SpectrumPanel.Visibility = Visibility.Collapsed;
+                SyncVisualizerTimerState();
                 return;
             }
-
-            if (SpectrumPanel.Visibility != Visibility.Visible)
-                SpectrumPanel.Visibility = Visibility.Visible;
 
             float[] levels = _wasapiBridge.GetSpectrumSnapshot();
             for (int i = 0; i < _spectrumBars.Length && i < levels.Length; i++)
@@ -146,6 +184,7 @@ namespace Nocturne
             if (_wasapiBridge.IsRunning && _settings.EnableVolumeNormalization)
                 tags.Add("NORM");
             AudioFormatText.Text = string.Join(" • ", tags);
+            SyncVisualizerTimerState();
         }
 
         private void ApplyDeviceEqProfileIfEnabled(string deviceId)
@@ -174,7 +213,7 @@ namespace Nocturne
 
                 try
                 {
-                    await Task.Delay(1000, token);
+                    await Task.Delay(700, token);
                     if (token.IsCancellationRequested)
                         return;
 
@@ -186,7 +225,7 @@ namespace Nocturne
 
         private async Task HandleHardwareDeviceChangeAsync()
         {
-            var activeDevices = WasapiAudioBridge.GetOutputDevices();
+            var activeDevices = await Task.Run(() => WasapiAudioBridge.GetOutputDevices());
 
             if (_wasapiBridge.IsRunning && !string.IsNullOrWhiteSpace(_wasapiBridge.ActiveTargetDeviceId))
             {
@@ -202,7 +241,7 @@ namespace Nocturne
                         await DeezerWebView.CoreWebView2.ExecuteScriptAsync("window.__applyNocturneSink && window.__applyNocturneSink('');");
                         if (wasPlaying)
                         {
-                            await Task.Delay(250);
+                            await Task.Delay(150);
                             await DeezerWebView.CoreWebView2.ExecuteScriptAsync("window.__nocturneCommand && window.__nocturneCommand('play');");
                         }
                     }
@@ -216,6 +255,7 @@ namespace Nocturne
                 if (targetConnected && (!_wasapiBridge.IsRunning || _wasapiBridge.ActiveTargetDeviceId != _settings.WasapiDeviceId))
                 {
                     ApplyDeviceEqProfileIfEnabled(_settings.WasapiDeviceId);
+                    RefreshTrayEqMenu();
                     await ApplyAudioRoutingAsync(silentOnError: true);
                 }
             }
@@ -415,6 +455,7 @@ namespace Nocturne
             {
                 Visible = false
             };
+            _trayEqMenuItem = new Forms.ToolStripMenuItem();
             _trayExitItem = new Forms.ToolStripMenuItem(Localization.Get("TrayExit", _settings.Language));
 
             _trayShowItem.Click += (_, _) => RestoreFromTray();
@@ -426,7 +467,11 @@ namespace Nocturne
             menu.Items.Add(_trayMiniItem);
             menu.Items.Add(_trayUnlockMiniItem);
             menu.Items.Add(new Forms.ToolStripSeparator());
+            menu.Items.Add(_trayEqMenuItem);
+            menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add(_trayExitItem);
+
+            RefreshTrayEqMenu();
 
             Icon trayAppIcon = SystemIcons.Application;
             try
@@ -448,6 +493,98 @@ namespace Nocturne
             _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
         }
 
+        private void RefreshTrayEqMenu()
+        {
+            if (_trayEqMenuItem == null)
+                return;
+
+            bool isTr = Localization.ResolveLanguageCode(_settings.Language) == "tr";
+            _trayEqMenuItem.Text = isTr ? "Hızlı EQ Profili" : "Quick EQ Profile";
+            _trayEqMenuItem.DropDownItems.Clear();
+
+            var toggleItem = new Forms.ToolStripMenuItem(Localization.Get("EqEnableCheck", _settings.Language))
+            {
+                Checked = _settings.EqualizerEnabled
+            };
+            toggleItem.Click += (_, _) =>
+            {
+                _settings.EqualizerEnabled = !_settings.EqualizerEnabled;
+                ApplyQuickEqChange();
+            };
+            _trayEqMenuItem.DropDownItems.Add(toggleItem);
+            _trayEqMenuItem.DropDownItems.Add(new Forms.ToolStripSeparator());
+
+            var builtInList = new (string Key, string LocKey)[]
+            {
+                ("flat", "EqPresetFlat"),
+                ("harman_over_ear", "EqPresetHarmanOverEar"),
+                ("harman_iem", "EqPresetHarmanIem"),
+                ("warm_acoustic", "EqPresetWarmAcoustic"),
+                ("vocal_forward", "EqPresetVocalForward"),
+                ("bass_boost", "EqPresetBass")
+            };
+
+            foreach (var (key, locKey) in builtInList)
+            {
+                var item = new Forms.ToolStripMenuItem(Localization.Get(locKey, _settings.Language))
+                {
+                    Checked = _settings.EqualizerEnabled &&
+                              string.Equals(_settings.EqualizerPreset, key, StringComparison.OrdinalIgnoreCase)
+                };
+                item.Click += (_, _) => SelectTrayEqPreset(key);
+                _trayEqMenuItem.DropDownItems.Add(item);
+            }
+
+            if (_settings.CustomEqPresets.Count > 0)
+            {
+                _trayEqMenuItem.DropDownItems.Add(new Forms.ToolStripSeparator());
+                foreach (var customName in _settings.CustomEqPresets.Keys.OrderBy(k => k))
+                {
+                    string capturedName = customName;
+                    var item = new Forms.ToolStripMenuItem($"★ {capturedName}")
+                    {
+                        Checked = _settings.EqualizerEnabled &&
+                                  string.Equals(_settings.EqualizerPreset, capturedName, StringComparison.OrdinalIgnoreCase)
+                    };
+                    item.Click += (_, _) => SelectTrayEqPreset(capturedName);
+                    _trayEqMenuItem.DropDownItems.Add(item);
+                }
+            }
+        }
+
+        private void SelectTrayEqPreset(string presetKey)
+        {
+            if (!_settings.TryGetEqPresetBands(presetKey, out var bands))
+                return;
+
+            _settings.EqualizerEnabled = true;
+            _settings.EqualizerPreset = presetKey;
+            _settings.EqualizerBands = bands;
+            ApplyQuickEqChange();
+        }
+
+        private void ApplyQuickEqChange()
+        {
+            if (_settings.AutoDeviceEqProfile)
+            {
+                string activeDevKey = _settings.AudioEngineMode.StartsWith("wasapi")
+                    ? (string.IsNullOrWhiteSpace(_settings.WasapiDeviceId) ? "default" : _settings.WasapiDeviceId)
+                    : (string.IsNullOrWhiteSpace(_settings.AudioOutputDeviceId) ? "default" : _settings.AudioOutputDeviceId);
+
+                _settings.DeviceEqProfiles[activeDevKey] = new DeviceEqProfile
+                {
+                    Enabled = _settings.EqualizerEnabled,
+                    Preset = _settings.EqualizerPreset,
+                    Bands = (float[])_settings.EqualizerBands.Clone()
+                };
+            }
+
+            _settings.Save();
+            _wasapiBridge.SetDsp(_settings.EqualizerEnabled, _settings.EqualizerBands, _settings.EnableVolumeNormalization);
+            UpdateAudioFormatBadge();
+            RefreshTrayEqMenu();
+        }
+
         private void UpdateTrayTexts()
         {
             if (_trayShowItem != null)
@@ -458,6 +595,7 @@ namespace Nocturne
                 _trayUnlockMiniItem.Text = Localization.Get("TrayUnlockMini", _settings.Language);
             if (_trayExitItem != null)
                 _trayExitItem.Text = Localization.Get("TrayExit", _settings.Language);
+            RefreshTrayEqMenu();
         }
 
         private void RestoreFromTray()
@@ -549,7 +687,7 @@ namespace Nocturne
 
             if (_settings.AudioEngineMode.StartsWith("wasapi"))
             {
-                var allDevices = WasapiAudioBridge.GetOutputDevices();
+                var allDevices = await Task.Run(() => WasapiAudioBridge.GetOutputDevices());
 
                 if (!string.IsNullOrWhiteSpace(_settings.WasapiDeviceId) &&
                     !allDevices.Any(d => d.Id == _settings.WasapiDeviceId))
@@ -562,12 +700,13 @@ namespace Nocturne
                 }
 
                 bool wasPlaying = _isLastPlaying;
+                bool exclusive = _settings.AudioEngineMode == "wasapi_exclusive";
 
                 _wasapiBridge.Stop();
                 if (wasPlaying && DeezerWebView?.CoreWebView2 != null)
                 {
                     await DeezerWebView.CoreWebView2.ExecuteScriptAsync("window.__nocturneCommand && window.__nocturneCommand('pause');");
-                    await Task.Delay(120);
+                    await Task.Delay(80);
                 }
 
                 var targetDev = string.IsNullOrWhiteSpace(_settings.WasapiDeviceId)
@@ -577,16 +716,19 @@ namespace Nocturne
                     ? allDevices.Find(d => d.Id != targetDev.Id)
                     : null;
 
-                if (DeezerWebView?.CoreWebView2 != null && captureDev != null)
+                if (DeezerWebView?.CoreWebView2 != null)
                 {
-                    string bridgeSink = await FindWebViewSinkIdByDeviceNameAsync(captureDev.Name);
-                    string escapedId = JsonSerializer.Serialize(bridgeSink);
+                    // Çift cihaz varsa WebView2 sesini yakalama cihazına, tek cihaz varsa doğrudan hedef cihaza yönlendir
+                    string sinkTargetName = (captureDev ?? targetDev)?.Name ?? "";
+                    string sinkIdToSet = string.IsNullOrWhiteSpace(sinkTargetName)
+                        ? ""
+                        : await FindWebViewSinkIdByDeviceNameAsync(sinkTargetName);
+                    string escapedId = JsonSerializer.Serialize(sinkIdToSet);
                     await DeezerWebView.CoreWebView2.ExecuteScriptAsync($"window.__applyNocturneSink && window.__applyNocturneSink({escapedId});");
-                    await Task.Delay(250);
                 }
 
-                bool exclusive = _settings.AudioEngineMode == "wasapi_exclusive";
-                var (success, errorMsg) = _wasapiBridge.Start(_settings.WasapiDeviceId, exclusive);
+                string targetId = _settings.WasapiDeviceId;
+                var (success, errorMsg) = await Task.Run(() => _wasapiBridge.Start(targetId, exclusive));
                 UpdateAudioFormatBadge();
 
                 if (!success)
@@ -602,7 +744,7 @@ namespace Nocturne
 
                 if (wasPlaying && DeezerWebView?.CoreWebView2 != null)
                 {
-                    await Task.Delay(150);
+                    await Task.Delay(100);
                     await DeezerWebView.CoreWebView2.ExecuteScriptAsync("window.__nocturneCommand && window.__nocturneCommand('play');");
                 }
             }
@@ -654,23 +796,7 @@ namespace Nocturne
             if (_settings.CheckUpdatesOnStartup)
                 _ = CheckForAppUpdatesAsync();
 
-            string userDataFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Nocturne",
-                "WebView2Data"
-            );
-
-            string targetLang = _settings.Language == "auto"
-                ? CultureInfo.CurrentUICulture.Name
-                : (_settings.Language == "tr" ? "tr-TR" : "en-US");
-
-            var options = new CoreWebView2EnvironmentOptions
-            {
-                Language = targetLang,
-                AdditionalBrowserArguments = "--disable-features=HardwareMediaKeyHandling,MediaSessionService"
-            };
-
-            var environment = await CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
+            var environment = await _webViewEnvTask;
             await DeezerWebView.EnsureCoreWebView2Async(environment);
 
             DeezerWebView.CoreWebView2.PermissionRequested += (_, args) =>
@@ -692,8 +818,7 @@ namespace Nocturne
 
             if (_settings.AudioEngineMode.StartsWith("wasapi") || !string.IsNullOrWhiteSpace(_settings.AudioOutputDeviceId))
             {
-                await Task.Delay(800);
-                await ApplyAudioRoutingAsync(silentOnError: true);
+                _ = ApplyAudioRoutingAsync(silentOnError: true);
             }
         }
 
@@ -966,7 +1091,7 @@ namespace Nocturne
                         }} catch (_) {{}}
                     }};
 
-                    setInterval(window.__pushNocturneState, 500);
+                    setInterval(window.__pushNocturneState, 750);
                 }})();
             ";
         }
@@ -999,17 +1124,18 @@ namespace Nocturne
                 string script = @"
                     (async () => {
                         try {
-                            try {
-                                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                                stream.getTracks().forEach(t => t.stop());
-                            } catch (_) {}
-
-                            const devices = await navigator.mediaDevices.enumerateDevices();
-                            const outputs = devices
-                                .filter(d => d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')
-                                .map(d => ({ DeviceId: d.deviceId, Label: d.label || ('Audio Output (' + d.deviceId.slice(0, 6) + ')') }));
-
-                            window.chrome.webview.postMessage('NOCTURNE_DEVICES:' + JSON.stringify(outputs));
+                            let devices = await navigator.mediaDevices.enumerateDevices();
+                            let outputs = devices.filter(d => d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+                            if (outputs.length > 0 && !outputs[0].label) {
+                                try {
+                                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                                    stream.getTracks().forEach(t => t.stop());
+                                    devices = await navigator.mediaDevices.enumerateDevices();
+                                    outputs = devices.filter(d => d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+                                } catch (_) {}
+                            }
+                            const mapped = outputs.map(d => ({ DeviceId: d.deviceId, Label: d.label || ('Audio Output (' + d.deviceId.slice(0, 6) + ')') }));
+                            window.chrome.webview.postMessage('NOCTURNE_DEVICES:' + JSON.stringify(mapped));
                         } catch (e) {
                             window.chrome.webview.postMessage('NOCTURNE_DEVICES:[]');
                         }
@@ -1018,7 +1144,7 @@ namespace Nocturne
 
                 await DeezerWebView.CoreWebView2.ExecuteScriptAsync(script);
 
-                var completed = await Task.WhenAny(tcs.Task, Task.Delay(3000));
+                var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000));
                 if (completed == tcs.Task)
                 {
                     string json = await tcs.Task;
