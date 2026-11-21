@@ -1,4 +1,8 @@
-# Nocturne
+> **⚠️ Legacy / Archived Version:** This repository hosts the archived **v0.1.3** release of Nocturne built with C# (.NET 10 WPF). Active development continues in the new Rust + GPUI repository: **[Nocturne](https://github.com/egehansimarikk/Nocturne)**.
+>
+> **⚠️ Legacy / Arşiv Sürümü:** Bu depo Nocturne'ün C# (.NET 10 WPF) ile geliştirilmiş **v0.1.3** sürümünü barındırır ve arşivlenmiştir. Aktif geliştirme Rust + GPUI tabanlı yeni **[Nocturne](https://github.com/egehansimarikk/Nocturne)** deposunda devam etmektedir.
+
+# Nocturne (WPF Legacy)
 
 <p align="center">
   <img src="Assets/nocturne.ico" alt="Nocturne Logo" width="96" height="96" />
@@ -10,6 +14,7 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Status-Archived%20(Legacy)-orange?style=flat-square" alt="Archived" />
   <img src="https://img.shields.io/badge/Version-v0.1.3-A238FF?style=flat-square" alt="Version v0.1.3" />
   <img src="https://img.shields.io/badge/.NET-10.0-512BD4?style=flat-square&logo=dotnet" alt=".NET 10" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%2F11%20(x64)-0078D6?style=flat-square&logo=windows" alt="Windows x64" />
